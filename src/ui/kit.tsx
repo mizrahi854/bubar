@@ -167,7 +167,7 @@ export function Toggle({ checked, onChange, label, description, id }: { checked:
 
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string; icon?: ReactNode }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <div role="radiogroup" aria-label={label} className="flex rounded-full bg-surface p-1">
+    <div role="radiogroup" aria-label={label} className="flex min-w-0 rounded-full bg-surface p-1">
       {options.map((o) => (
         <button
           key={o.value}
@@ -175,7 +175,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
           role="radio"
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
-          className={clsx("flex h-10 flex-1 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-semibold transition", value === o.value ? "bg-bg shadow-sm" : "text-muted hover:text-ink")}
+          className={clsx("flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-2 text-sm font-semibold transition sm:px-3", value === o.value ? "bg-bg shadow-sm" : "text-muted hover:text-ink")}
         >
           {o.icon}
           {o.label}

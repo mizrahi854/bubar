@@ -4,6 +4,7 @@ import { compact, price } from "../../domain/format";
 import { DemoLabel, Segmented } from "../../ui/kit";
 import { Page, TopBar } from "../../ui/shell";
 import { StatCard, useBiz } from "./common";
+import { CreatorInsights } from "./insights";
 
 export function AnalyticsScreen() {
   const { db, business: b, appointments } = useBiz();
@@ -78,12 +79,12 @@ export function AnalyticsScreen() {
             <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-surface text-start text-xs text-muted">
                 <tr>
-                  <th className="p-3 text-start font-semibold">פוסט</th>
-                  <th className="p-3 font-semibold">צפיות</th>
-                  <th className="p-3 font-semibold">שמירות</th>
-                  <th className="p-3 font-semibold">התחלות הזמנה</th>
-                  <th className="p-3 font-semibold">הזמנות</th>
-                  <th className="p-3 font-semibold">שווי</th>
+                  <th scope="col" className="p-3 text-start font-semibold">פוסט</th>
+                  <th scope="col" className="p-3 font-semibold">צפיות</th>
+                  <th scope="col" className="p-3 font-semibold">שמירות</th>
+                  <th scope="col" className="p-3 font-semibold">התחלות הזמנה</th>
+                  <th scope="col" className="p-3 font-semibold">הזמנות</th>
+                  <th scope="col" className="p-3 font-semibold">שווי</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -105,6 +106,7 @@ export function AnalyticsScreen() {
             </table>
           </div>
         </section>
+        <CreatorInsights db={db} businessId={b.id} since={since} />
       </Page>
     </>
   );

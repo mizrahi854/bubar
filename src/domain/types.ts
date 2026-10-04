@@ -137,6 +137,40 @@ export interface MediaItem {
   trimEnd?: number;
   /** Where the media comes from (license/source note). */
   source: string;
+  /** Provenance for imported media: the original post and the owner's profile. Never guessed. */
+  sourceReelUrl?: string;
+  sourceProfileUrl?: string;
+  /** Credited creator, only when verified. */
+  creator?: string;
+  /** Look applied at playback (CSS filter preset id). Recorded camera clips have it baked in. */
+  filter?: string;
+  /** Text stickers placed in the editor, positioned in % of the frame. */
+  overlays?: TextOverlay[];
+}
+
+export interface TextOverlay {
+  id: ID;
+  text: string;
+  x: number;
+  y: number;
+  style: "plain" | "box" | "outline";
+  color: string;
+}
+
+/** 24-hour story. Owner sees who viewed it; viewers can reply (goes to messages) or book. */
+export interface Story {
+  id: ID;
+  businessId: ID;
+  media: MediaItem;
+  createdAt: string;
+  expiresAt: string;
+  /** Optional call to action */
+  serviceId?: ID;
+  /** Shared post shown as a card in the story */
+  sharedPostId?: ID;
+  viewers: { userId: ID; at: string }[];
+  likedBy: ID[];
+  isSample: boolean;
 }
 
 export type PostKind = "reel" | "image" | "carousel";
@@ -172,6 +206,10 @@ export interface Comment {
   text: string;
   createdAt: string;
   hidden: boolean;
+  /** Reply to another comment (one level, like Instagram) */
+  parentId?: ID;
+  likedBy?: ID[];
+  pinned?: boolean;
 }
 
 export interface Collection {
@@ -348,11 +386,18 @@ export interface IntegrationEvent {
   resolved: boolean;
 }
 
+export type TrafficSource = "feed" | "following" | "nearby" | "discover" | "profile" | "story" | "share" | "tag";
+
 export interface AnalyticsEvent {
   id: ID;
-  type: "view" | "profile_visit" | "booking_start";
+  type: "view" | "profile_visit" | "booking_start" | "watch" | "story_view" | "share" | "follow";
   businessId: ID;
   postId?: ID;
+  storyId?: ID;
+  /** watch: seconds watched in this view, and whether it reached the end */
+  seconds?: number;
+  completed?: boolean;
+  source?: TrafficSource;
   at: string;
 }
 
@@ -364,6 +409,7 @@ export interface DB {
   professionals: Professional[];
   services: Service[];
   posts: Post[];
+  stories: Story[];
   comments: Comment[];
   collections: Collection[];
   appointments: Appointment[];

@@ -7,6 +7,8 @@ import { AppShell } from "./ui/shell";
 import { RequireMode } from "./screens/guards";
 import { FeedScreen } from "./screens/feed";
 import { PostScreen } from "./screens/post";
+import { StoryViewer } from "./screens/stories";
+import { TagScreen } from "./screens/tag";
 import { DiscoverScreen } from "./screens/discover";
 import { BusinessScreen } from "./screens/business";
 import { ProfessionalScreen } from "./screens/professional";
@@ -73,6 +75,8 @@ const routes: RouteObject[] = [
     children: [
       { path: "/", element: <FeedScreen /> },
       { path: "/post/:postId", element: <PostScreen /> },
+      { path: "/story/:businessId", element: <StoryViewer /> },
+      { path: "/tag/:tag", element: <TagScreen /> },
       { path: "/discover", element: <DiscoverScreen /> },
       { path: "/b/:businessId", element: <BusinessScreen /> },
       { path: "/pro/:proId", element: <ProfessionalScreen /> },

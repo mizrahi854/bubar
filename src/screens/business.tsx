@@ -17,6 +17,7 @@ import { useMediaUrl } from "../ui/hooks";
 import { TopBar } from "../ui/shell";
 import { PostTile } from "./discover";
 import { ReportSheet } from "./social-sheets";
+import { StoryAvatar, hasLiveStory } from "./stories";
 
 const TABS = [
   ["posts", "פוסטים"],
@@ -106,7 +107,7 @@ export function BusinessScreen() {
       <Cover src={b.cover} />
       <div className="mx-auto max-w-5xl px-4 lg:px-6">
         <div className="-mt-12 flex items-end gap-4">
-          <Avatar src={b.avatar} name={b.name} size={96} className="border-4 border-bg" />
+          {hasLiveStory(db, b.id) ? <span className="rounded-full bg-bg p-1"><StoryAvatar business={b} size={88} /></span> : <Avatar src={b.avatar} name={b.name} size={96} className="border-4 border-bg" />}
           <dl className="mb-1 grid flex-1 grid-cols-3 text-center">
             <Stat n={publicCount} label="פוסטים" />
             <Stat n={followers} label="עוקבים" />

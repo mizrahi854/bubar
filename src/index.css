@@ -142,6 +142,9 @@ html {
   font-size: calc(16px * var(--text-scale, 1));
   background: var(--bg);
   -webkit-text-size-adjust: 100%;
+  /* Keep focused/scrolled-to controls clear of the sticky top bar and the floating bottom nav + action bars */
+  scroll-padding-top: calc(4.5rem + env(safe-area-inset-top));
+  scroll-padding-bottom: calc(11rem + env(safe-area-inset-bottom));
 }
 body {
   margin: 0;

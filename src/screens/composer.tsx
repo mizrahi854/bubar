@@ -1,18 +1,44 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { Clapperboard, Film, ImageIcon, Images, Library, Scissors, Trash2, Upload, X } from "lucide-react";
+import { Camera, CircleDot, Clapperboard, Film, ImageIcon, Images, Library, Scissors, Trash2, Upload, X } from "lucide-react";
 import clsx from "clsx";
 import type { MediaItem, PostKind } from "../domain/types";
 import { image, video } from "../data/seed";
 import { mediaStore } from "../data/repository";
-import { deletePost, savePostDraftOrPublish, validatePost, type PostInput } from "../store/actions";
+import { createStory, deletePost, savePostDraftOrPublish, validatePost, type PostInput } from "../store/actions";
 import { toast, useApp, useMe } from "../store/app";
 import { useMediaUrl } from "../ui/hooks";
 import { Button, DemoLabel, EmptyState, Field, Input, LinkButton, Segmented, Select, Textarea } from "../ui/kit";
 import { ConfirmDialog, Sheet } from "../ui/overlays";
 import { Page, TopBar } from "../ui/shell";
+import { CameraCapture } from "./camera";
+import { MediaEditor } from "./editor";
 
-const LIB_VIDEOS = ["hair-honey", "hair-copper", "hair-ash", "blowout-honey", "blowout-espresso", "braid-honey", "braid-ash", "fade-dark", "fade-light", "nails-chrome", "nails-french", "nails-burgundy", "nails-nude", "makeup-rose", "makeup-bronze", "lashes-soft", "lashes-deep", "lips-red", "lips-nude", "skincare-light", "skincare-dark"];
+type Kind = PostKind | "story";
+
+const LIB_VIDEOS = [
+  "hair-honey",
+  "hair-copper",
+  "hair-ash",
+  "blowout-honey",
+  "blowout-espresso",
+  "braid-honey",
+  "braid-ash",
+  "fade-dark",
+  "fade-light",
+  "nails-chrome",
+  "nails-french",
+  "nails-burgundy",
+  "nails-nude",
+  "makeup-rose",
+  "makeup-bronze",
+  "lashes-soft",
+  "lashes-deep",
+  "lips-red",
+  "lips-nude",
+  "skincare-light",
+  "skincare-dark",
+];
 const LIB_IMAGES = ["square-hair", "square-color", "square-blowout", "square-braid", "square-barber", "square-nails", "square-gel", "square-makeup", "square-lashes", "square-brows", "square-lips", "square-skincare", "cover-hair", "cover-nails", "cover-makeup", "cover-barber"];
 const UPLOAD_SOURCE = "הועלה על ידי העסק (נשמר רק בדפדפן הזה)";
 const MAX_VIDEO_SEC = 90;
@@ -26,7 +52,13 @@ export function ComposerScreen() {
   const b = db.businesses.find((x) => x.id === me?.businessId);
   const existing = editId ? db.posts.find((p) => p.id === editId && p.businessId === b?.id) : undefined;
 
-  const [kind, setKind] = useState<PostKind>(existing?.kind ?? "reel");
+  const [kind, setKind] = useState<Kind>(existing?.kind ?? (sp.get("kind") === "story" ? "story" : "reel"));
+  const [camera, setCamera] = useState(false);
+  const [src, setSrc] = useState({
+    reel: existing?.media[0]?.sourceReelUrl ?? "",
+    profile: existing?.media[0]?.sourceProfileUrl ?? "",
+    creator: existing?.media[0]?.creator ?? "",
+  });
   const [media, setMedia] = useState<MediaItem[]>(existing?.media ?? []);
   const [cover, setCover] = useState<string | undefined>(existing?.cover);
   const [caption, setCaption] = useState(existing?.caption ?? "");
@@ -59,13 +91,32 @@ export function ComposerScreen() {
     .map((t) => t.replace(/^#/, "").trim())
     .filter(Boolean)
     .slice(0, 10);
-  const input: PostInput = { kind, media, cover, caption, subtitle, tags: tagList, cityId, serviceId: serviceId || undefined, professionalId: proId || undefined };
-  const errors = validatePost(input, true);
+  // Credit / provenance travels with every media item (never guessed — only what the business enters)
+  const withSource = (m: MediaItem): MediaItem => ({
+    ...m,
+    sourceReelUrl: src.reel.trim() || undefined,
+    sourceProfileUrl: src.profile.trim() || undefined,
+    creator: src.creator.trim() || undefined,
+  });
+  const srcError = [src.reel, src.profile].some((u) => u.trim() && !/^https:\/\/(www\.)?(instagram\.com|facebook\.com|fb\.watch|tiktok\.com|vm\.tiktok\.com)\//i.test(u.trim())) ? "קישור מקור: אינסטגרם, פייסבוק או טיקטוק (https://…)" : null;
+  const isStory = kind === "story";
+  const input: PostInput = {
+    kind: isStory ? "reel" : kind,
+    media: media.map(withSource),
+    cover,
+    caption,
+    subtitle,
+    tags: tagList,
+    cityId,
+    serviceId: serviceId || undefined,
+    professionalId: proId || undefined,
+  };
+  const errors = isStory ? (media.length ? [] : ["בחרו תמונה או סרטון לסטורי"]) : validatePost(input, true);
 
-  const changeKind = (k: PostKind) => {
+  const changeKind = (k: Kind) => {
     setKind(k);
     // keep only compatible media
-    setMedia((m) => (k === "reel" ? m.filter((x) => x.type === "video").slice(0, 1) : k === "image" ? m.filter((x) => x.type === "image").slice(0, 1) : m.filter((x) => x.type === "image").slice(0, 10)));
+    setMedia((m) => (k === "story" ? m.slice(0, 1) : k === "reel" ? m.filter((x) => x.type === "video").slice(0, 1) : k === "image" ? m.filter((x) => x.type === "image").slice(0, 1) : m.filter((x) => x.type === "image").slice(0, 10)));
     setCover(undefined);
   };
 
@@ -74,7 +125,7 @@ export function ComposerScreen() {
     setBusy(true);
     const added: MediaItem[] = [];
     for (const f of [...files]) {
-      if (kind === "reel") {
+      if (kind === "reel" || (kind === "story" && f.type.startsWith("video/"))) {
         if (!f.type.startsWith("video/")) {
           toast("error", "רילס חייב להיות קובץ וידאו");
           continue;
@@ -88,7 +139,13 @@ export function ComposerScreen() {
           toast("error", `הסרטון ארוך מ־${MAX_VIDEO_SEC} שניות`);
           continue;
         }
-        added.push({ type: "video", src: await mediaStore.put(f), source: UPLOAD_SOURCE, trimStart: 0, trimEnd: Math.round(dur * 10) / 10 || undefined });
+        added.push({
+          type: "video",
+          src: await mediaStore.put(f),
+          source: UPLOAD_SOURCE,
+          trimStart: 0,
+          trimEnd: Math.round(dur * 10) / 10 || undefined,
+        });
       } else {
         if (!f.type.startsWith("image/")) {
           toast("error", "בחרו קובץ תמונה");
@@ -98,7 +155,11 @@ export function ComposerScreen() {
           toast("error", "התמונה גדולה מדי (עד 12MB)");
           continue;
         }
-        added.push({ type: "image", src: await mediaStore.put(f), source: UPLOAD_SOURCE });
+        added.push({
+          type: "image",
+          src: await mediaStore.put(f),
+          source: UPLOAD_SOURCE,
+        });
       }
     }
     setBusy(false);
@@ -106,10 +167,25 @@ export function ComposerScreen() {
     setMedia((m) => (kind === "carousel" ? [...m, ...added].slice(0, 10) : added.slice(0, 1)));
     setCover(undefined);
   };
+  const onCaptured = (m: MediaItem) => {
+    setMedia((cur) => (kind === "carousel" ? [...cur, m].slice(0, 10) : [m]));
+    setCover(undefined);
+  };
 
   const save = (publish: boolean) => {
     setTried(true);
+    if (srcError) return toast("error", srcError);
     if (publish && errors.length) return toast("error", errors[0]);
+    if (isStory) {
+      const st = createStory({
+        media: withSource(media[0]),
+        serviceId: serviceId || undefined,
+      });
+      if (!st) return;
+      toast("ok", "הסטורי עלה ל־24 שעות");
+      navigate(`/story/${b.id}`, { replace: true });
+      return;
+    }
     const p = savePostDraftOrPublish(input, publish, existing?.id);
     if (!p) return;
     toast("ok", publish ? (existing?.status === "published" ? "השינויים נשמרו" : "פורסם!") : "נשמר כטיוטה");
@@ -121,29 +197,54 @@ export function ComposerScreen() {
       <TopBar title={existing ? "עריכת פוסט" : "יצירת תוכן"} sub={b.name} back />
       <Page className="max-w-4xl pb-52 lg:pb-32">
         <div className="grid gap-6 md:grid-cols-[320px_1fr]">
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <Segmented
               label="סוג פוסט"
               value={kind}
               onChange={changeKind}
               options={[
-                { value: "reel", label: "רילס", icon: <Film className="size-4" aria-hidden /> },
-                { value: "image", label: "תמונה", icon: <ImageIcon className="size-4" aria-hidden /> },
-                { value: "carousel", label: "קרוסלה", icon: <Images className="size-4" aria-hidden /> },
+                {
+                  value: "reel",
+                  label: "רילס",
+                  icon: <Film className="size-4" aria-hidden />,
+                },
+                {
+                  value: "image",
+                  label: "תמונה",
+                  icon: <ImageIcon className="size-4" aria-hidden />,
+                },
+                {
+                  value: "carousel",
+                  label: "קרוסלה",
+                  icon: <Images className="size-4" aria-hidden />,
+                },
+                ...(existing
+                  ? []
+                  : [
+                      {
+                        value: "story" as const,
+                        label: "סטורי",
+                        icon: <CircleDot className="size-4" aria-hidden />,
+                      },
+                    ]),
               ]}
             />
-            <Preview kind={kind} media={media} cover={cover} onRemove={(i) => setMedia((m) => m.filter((_, j) => j !== i))} />
-            <div className="grid grid-cols-2 gap-2">
-              <label className={clsx("cursor-pointer", "inline-flex h-12 items-center justify-center gap-2 rounded-full bg-ink px-4 text-[15px] font-semibold text-ink-inverse", busy && "pointer-events-none opacity-50")}>
-                <Upload className="size-4" aria-hidden /> {media.length && kind !== "carousel" ? "החלפה" : "העלאה"}
-                <input type="file" className="sr-only" accept={kind === "reel" ? "video/*" : "image/*"} multiple={kind === "carousel"} onChange={(e) => (addFiles(e.target.files), (e.target.value = ""))} />
+            <Preview kind={isStory ? (media[0]?.type === "image" ? "image" : "reel") : kind} media={media} cover={cover} onRemove={(i) => setMedia((m) => m.filter((_, j) => j !== i))} />
+            <div className="grid grid-cols-3 gap-2">
+              <Button onClick={() => setCamera(true)} className="px-2">
+                <Camera className="size-4" aria-hidden /> צילום
+              </Button>
+              <label className={clsx("cursor-pointer", "inline-flex h-12 items-center justify-center gap-2 rounded-full bg-surface px-2 text-[15px] font-semibold text-ink hover:bg-surface-2", busy && "pointer-events-none opacity-50")}>
+                <Upload className="size-4" aria-hidden /> {media.length && kind !== "carousel" ? "החלפה" : "גלריה"}
+                <input type="file" className="sr-only" accept={kind === "reel" ? "video/*" : kind === "story" ? "video/*,image/*" : "image/*"} multiple={kind === "carousel"} onChange={(e) => (addFiles(e.target.files), (e.target.value = ""))} />
               </label>
-              <Button variant="secondary" onClick={() => setLib(true)}>
-                <Library className="size-4" aria-hidden /> ספריית דמו
+              <Button variant="secondary" onClick={() => setLib(true)} className="px-2" aria-label="ספריית דמו">
+                <Library className="size-4" aria-hidden /> דמו
               </Button>
             </div>
-            <p className="text-xs text-muted">{kind === "reel" ? `וידאו אנכי עד ${MAX_VIDEO_SEC} שניות.` : kind === "carousel" ? "2–10 תמונות." : "תמונה אחת."} קבצים שמועלים נשמרים רק בדפדפן הזה.</p>
+            <p className="text-xs text-muted">{kind === "reel" ? `וידאו אנכי עד ${MAX_VIDEO_SEC} שניות.` : kind === "story" ? `תמונה או וידאו אחד (עד ${MAX_VIDEO_SEC} שניות), נעלם אחרי 24 שעות.` : kind === "carousel" ? "2–10 תמונות." : "תמונה אחת."} קבצים שמועלים נשמרים רק בדפדפן הזה.</p>
             {kind === "reel" && media[0] && <VideoTools item={media[0]} onChange={(m) => setMedia([m])} cover={cover} onCover={setCover} />}
+            {kind !== "carousel" && media[0] && <MediaEditor item={media[0]} onChange={(m) => setMedia([m])} />}
             {kind === "carousel" && media.length > 1 && (
               <Field label="תמונת שער" htmlFor="cm-cover">
                 <Select id="cm-cover" value={cover ?? media[0].src} onChange={(e) => setCover(e.target.value)}>
@@ -158,35 +259,40 @@ export function ComposerScreen() {
           </div>
 
           <div className="flex flex-col gap-4">
-            <Field label="כיתוב" htmlFor="cm-cap" error={tried && !caption.trim() ? "נא לכתוב כיתוב לפני פרסום" : null} hint={`${caption.length}/600`}>
-              <Textarea id="cm-cap" value={caption} maxLength={600} onChange={(e) => setCaption(e.target.value)} placeholder="ספרו על העבודה: הטכניקה, הגוון, כמה זמן זה לקח" />
-            </Field>
-            {kind === "reel" && (
-              <Field label="כתובית על הסרטון (לא חובה)" htmlFor="cm-sub" hint="מוצגת למי שהפעיל/ה כתוביות">
-                <Input id="cm-sub" value={subtitle} maxLength={80} onChange={(e) => setSubtitle(e.target.value)} />
-              </Field>
+            {isStory && <p className="rounded-2xl bg-surface p-3 text-sm">סטורי נעלם אחרי 24 שעות. אפשר לקשר שירות כדי שיופיע כפתור ״קביעת תור״, ולראות מי צפה.</p>}
+            {!isStory && (
+              <>
+                <Field label="כיתוב" htmlFor="cm-cap" error={tried && !caption.trim() ? "נא לכתוב כיתוב לפני פרסום" : null} hint={`${caption.length}/600`}>
+                  <Textarea id="cm-cap" value={caption} maxLength={600} onChange={(e) => setCaption(e.target.value)} placeholder="ספרו על העבודה: הטכניקה, הגוון, כמה זמן זה לקח" />
+                </Field>
+                {kind === "reel" && (
+                  <Field label="כתובית על הסרטון (לא חובה)" htmlFor="cm-sub" hint="מוצגת למי שהפעיל/ה כתוביות">
+                    <Input id="cm-sub" value={subtitle} maxLength={80} onChange={(e) => setSubtitle(e.target.value)} />
+                  </Field>
+                )}
+                <Field label="תגיות" htmlFor="cm-tags" hint="מופרדות ברווח, עד 10. למשל: בלונד גלים חתונה">
+                  <Input id="cm-tags" value={tags} onChange={(e) => setTags(e.target.value)} />
+                </Field>
+                {tagList.length > 0 && (
+                  <div className="-mt-2 flex flex-wrap gap-1.5">
+                    {tagList.map((t) => (
+                      <span key={t} className="rounded-full bg-surface px-2.5 py-0.5 text-xs">
+                        #{t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <Field label="עיר / אזור" htmlFor="cm-city" hint="קובע איפה הפוסט יופיע בסינון לפי עיר">
+                  <Select id="cm-city" value={cityId} onChange={(e) => setCityId(e.target.value)}>
+                    {cities.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </>
             )}
-            <Field label="תגיות" htmlFor="cm-tags" hint="מופרדות ברווח, עד 10. למשל: בלונד גלים חתונה">
-              <Input id="cm-tags" value={tags} onChange={(e) => setTags(e.target.value)} />
-            </Field>
-            {tagList.length > 0 && (
-              <div className="-mt-2 flex flex-wrap gap-1.5">
-                {tagList.map((t) => (
-                  <span key={t} className="rounded-full bg-surface px-2.5 py-0.5 text-xs">
-                    #{t}
-                  </span>
-                ))}
-              </div>
-            )}
-            <Field label="עיר / אזור" htmlFor="cm-city" hint="קובע איפה הפוסט יופיע בסינון לפי עיר">
-              <Select id="cm-city" value={cityId} onChange={(e) => setCityId(e.target.value)}>
-                {cities.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="שירות מקושר" htmlFor="cm-svc" hint="״קביעת תור״ מהפוסט יבחר אותו מראש">
                 <Select
@@ -217,6 +323,21 @@ export function ComposerScreen() {
                 </Select>
               </Field>
             </div>
+            <details className="rounded-2xl border border-line p-3" open={!!(src.reel || src.profile || src.creator)}>
+              <summary className="cursor-pointer text-sm font-semibold">קרדיט ומקור (ייבוא מאינסטגרם / טיקטוק)</summary>
+              <div className="mt-3 flex flex-col gap-3">
+                <p className="text-xs leading-relaxed text-muted">העלו את הקובץ עצמו (עם רשות של בעלי התוכן) והוסיפו כאן את הקישור המקורי. הקישור נשמר כמקור ומוצג כקרדיט — המערכת לא מורידה תוכן מקישורים.</p>
+                <Field label="קישור לפוסט / רילס המקורי" htmlFor="cm-src-reel" error={srcError}>
+                  <Input id="cm-src-reel" dir="ltr" className="text-start" placeholder="https://www.instagram.com/reel/…" value={src.reel} onChange={(e) => setSrc({ ...src, reel: e.target.value })} />
+                </Field>
+                <Field label="קישור לפרופיל של היוצר/ת" htmlFor="cm-src-profile">
+                  <Input id="cm-src-profile" dir="ltr" className="text-start" placeholder="https://www.instagram.com/…" value={src.profile} onChange={(e) => setSrc({ ...src, profile: e.target.value })} />
+                </Field>
+                <Field label="שם היוצר/ת לקרדיט" htmlFor="cm-src-creator" hint="רק אם ידוע בוודאות">
+                  <Input id="cm-src-creator" value={src.creator} onChange={(e) => setSrc({ ...src, creator: e.target.value })} />
+                </Field>
+              </div>
+            </details>
             {existing?.status === "hidden" && <p className="rounded-2xl bg-bad-soft p-3 text-sm text-bad">הפוסט הוסתר על ידי צוות Beautigo: {existing.hiddenReason}. אפשר לערוך, אך הוא לא יוצג עד לבדיקה חוזרת.</p>}
             {tried && errors.length > 0 && (
               <ul role="alert" className="rounded-2xl bg-bad-soft p-3 text-sm text-bad">
@@ -237,21 +358,22 @@ export function ComposerScreen() {
             </Button>
           )}
           <span className="flex-1" />
-          {existing?.status !== "published" && (
+          {existing?.status !== "published" && !isStory && (
             <Button variant="secondary" disabled={!media.length || busy} onClick={() => save(false)}>
               שמירת טיוטה
             </Button>
           )}
           <Button disabled={busy} onClick={() => save(true)}>
-            {existing?.status === "published" ? "שמירת שינויים" : "פרסום"}
+            {isStory ? "העלאה לסטורי" : existing?.status === "published" ? "שמירת שינויים" : "פרסום"}
           </Button>
         </div>
       </div>
 
+      <CameraCapture open={camera} onClose={() => setCamera(false)} onCapture={onCaptured} allowVideo={kind === "reel" || kind === "story"} />
       <LibrarySheet
         open={lib}
         onClose={() => setLib(false)}
-        kind={kind}
+        kind={isStory ? "reel" : kind}
         onPick={(m) => {
           setMedia((cur) => (kind === "carousel" ? [...cur, m].slice(0, 10) : [m]));
           setCover(undefined);
@@ -400,12 +522,38 @@ function VideoTools({ item, onChange, cover, onCover }: { item: MediaItem; onCha
             <p className="mb-2 text-xs text-muted">נשמר כחלון ניגון בלבד — הקובץ המקורי לא נערך. בגרסה אמיתית החיתוך יתבצע בשרת.</p>
             <label className="flex items-center gap-2 text-sm">
               <span className="w-10">התחלה</span>
-              <input type="range" min={0} max={dur} step={0.1} value={start} onChange={(e) => onChange({ ...item, trimStart: Math.min(Number(e.target.value), end - 1) })} className="flex-1 accent-[var(--ink)]" />
+              <input
+                type="range"
+                min={0}
+                max={dur}
+                step={0.1}
+                value={start}
+                onChange={(e) =>
+                  onChange({
+                    ...item,
+                    trimStart: Math.min(Number(e.target.value), end - 1),
+                  })
+                }
+                className="flex-1 accent-[var(--ink)]"
+              />
               <span className="num w-10 text-end">{start.toFixed(1)}</span>
             </label>
             <label className="mt-1 flex items-center gap-2 text-sm">
               <span className="w-10">סיום</span>
-              <input type="range" min={0} max={dur} step={0.1} value={end} onChange={(e) => onChange({ ...item, trimEnd: Math.max(Number(e.target.value), start + 1) })} className="flex-1 accent-[var(--ink)]" />
+              <input
+                type="range"
+                min={0}
+                max={dur}
+                step={0.1}
+                value={end}
+                onChange={(e) =>
+                  onChange({
+                    ...item,
+                    trimEnd: Math.max(Number(e.target.value), start + 1),
+                  })
+                }
+                className="flex-1 accent-[var(--ink)]"
+              />
               <span className="num w-10 text-end">{end.toFixed(1)}</span>
             </label>
             <p className="num mt-1 text-xs text-muted">אורך מנוגן: {(end - start).toFixed(1)} שניות</p>

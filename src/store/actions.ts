@@ -1,4 +1,4 @@
-import type { Business, CategoryId, DB, ID, MediaItem, Post, PostKind, Professional, ReportTarget, Service, User } from "../domain/types";
+import type { Business, CategoryId, DB, ID, MediaItem, Post, PostKind, Professional, ReportTarget, Service, Story, TrafficSource, User } from "../domain/types";
 import { assert, can, isAdmin, PermissionError } from "../domain/permissions";
 import * as booking from "../domain/booking";
 import { uid } from "../domain/ids";
@@ -90,7 +90,10 @@ export function toggleFollowBusiness(businessId: ID) {
     const user = db.users.find((x) => x.id === me.id)!;
     const on = !user.followingBusinesses.includes(businessId);
     user.followingBusinesses = on ? [...user.followingBusinesses, businessId] : user.followingBusinesses.filter((x) => x !== businessId);
-    if (on) notify(db, db.businesses.find((b) => b.id === businessId)?.ownerId, "social", "עוקב/ת חדש/ה", `${me.name} התחיל/ה לעקוב`, "/manage/analytics");
+    if (on) {
+      notify(db, db.businesses.find((b) => b.id === businessId)?.ownerId, "social", "עוקב/ת חדש/ה", `${me.name} התחיל/ה לעקוב`, "/manage/analytics");
+      db.analytics.push({ id: uid("ev"), type: "follow", businessId, at: nowISO() });
+    }
     return on;
   });
 }
@@ -168,19 +171,123 @@ export function deleteCollection(id: ID) {
   });
 }
 
-export function addComment(postId: ID, text: string) {
+export function addComment(postId: ID, text: string, parentId?: ID) {
   return mutate((db, u) => {
     const me = requireUser(u);
     assert(can.interact(me));
     const t = text.trim();
     if (!t) throw new Error("התגובה ריקה");
     if (t.length > 500) throw new Error("עד 500 תווים");
-    const c = { id: uid("c"), postId, userId: me.id, text: t, createdAt: nowISO(), hidden: false };
+    // Replies are one level deep, like Instagram: replying to a reply attaches to its parent
+    const parent = parentId ? db.comments.find((c) => c.id === parentId && c.postId === postId) : undefined;
+    const c = { id: uid("c"), postId, userId: me.id, text: t, createdAt: nowISO(), hidden: false, parentId: parent ? (parent.parentId ?? parent.id) : undefined, likedBy: [] as ID[] };
     db.comments.push(c);
     const p = db.posts.find((x) => x.id === postId)!;
     const owner = db.businesses.find((b) => b.id === p.businessId)?.ownerId;
     if (owner !== me.id) notify(db, owner, "social", "תגובה חדשה", `${me.name}: ${t.slice(0, 60)}`, `/post/${postId}`);
+    if (parent && parent.userId !== me.id) notify(db, parent.userId, "social", `${me.name} הגיב/ה לך`, t.slice(0, 60), `/post/${postId}`);
+    // @mentions notify the mentioned account
+    for (const handle of new Set([...t.matchAll(/@([a-z0-9._]{3,30})/gi)].map((m) => m[1].toLowerCase()))) {
+      const user = db.users.find((x) => x.username === handle);
+      const biz = db.businesses.find((x) => x.username === handle);
+      const target = user?.id ?? biz?.ownerId;
+      if (target && target !== me.id) notify(db, target, "social", `${me.name} תייג/ה אותך`, t.slice(0, 60), `/post/${postId}`);
+    }
     return c;
+  });
+}
+
+export function toggleCommentLike(commentId: ID) {
+  return mutate((db, u) => {
+    const me = requireUser(u);
+    assert(can.interact(me));
+    const c = db.comments.find((x) => x.id === commentId)!;
+    const likes = c.likedBy ?? [];
+    c.likedBy = likes.includes(me.id) ? likes.filter((x) => x !== me.id) : [...likes, me.id];
+    return c.likedBy.includes(me.id);
+  });
+}
+
+/** The post's business can pin one comment to the top. */
+export function togglePinComment(commentId: ID) {
+  return mutate((db, u) => {
+    const c = db.comments.find((x) => x.id === commentId)!;
+    const p = db.posts.find((x) => x.id === c.postId)!;
+    assert(can.editPost(u, p), "רק העסק יכול לנעוץ תגובה");
+    const was = !!c.pinned;
+    for (const x of db.comments.filter((x) => x.postId === c.postId)) x.pinned = false;
+    c.pinned = !was;
+    return c.pinned;
+  });
+}
+
+/* ---------------- Stories (24h) ---------------- */
+
+export const isLive = (s: Story, now = Date.now()) => Date.parse(s.expiresAt) > now;
+
+export function createStory(input: { media: MediaItem; serviceId?: ID; sharedPostId?: ID }) {
+  return mutate((db, u) => {
+    const b = ownBusiness(db, u);
+    if (input.serviceId) assert(db.services.some((s) => s.id === input.serviceId && s.businessId === b.id), "השירות לא שייך לעסק");
+    if (input.sharedPostId) assert(db.posts.some((p) => p.id === input.sharedPostId && p.status === "published"), "אפשר לשתף רק פוסט מפורסם");
+    const created = new Date();
+    const st: Story = { id: uid("st"), businessId: b.id, media: input.media, createdAt: created.toISOString(), expiresAt: new Date(created.getTime() + 24 * 3600_000).toISOString(), serviceId: input.serviceId, sharedPostId: input.sharedPostId, viewers: [], likedBy: [], isSample: false };
+    db.stories.push(st);
+    return st;
+  });
+}
+
+export function deleteStory(id: ID) {
+  return mutate((db, u) => {
+    const st = db.stories.find((x) => x.id === id)!;
+    assert(can.manageBusiness(u, st.businessId), "רק העסק יכול למחוק את הסטורי");
+    db.stories = db.stories.filter((x) => x.id !== id);
+  });
+}
+
+/** Marks a story as seen by the signed-in viewer (owners viewing their own don't count). */
+export function viewStory(id: ID) {
+  mutate(
+    (db, u) => {
+      const st = db.stories.find((x) => x.id === id);
+      if (!st || !u) return;
+      const ownerId = db.businesses.find((b) => b.id === st.businessId)?.ownerId;
+      if (u.id === ownerId || st.viewers.some((v) => v.userId === u.id)) return;
+      st.viewers.push({ userId: u.id, at: nowISO() });
+      db.analytics.push({ id: uid("ev"), type: "story_view", businessId: st.businessId, storyId: st.id, at: nowISO() });
+    },
+    { silent: true },
+  );
+}
+
+export function toggleStoryLike(id: ID) {
+  return mutate((db, u) => {
+    const me = requireUser(u);
+    assert(can.interact(me));
+    const st = db.stories.find((x) => x.id === id)!;
+    st.likedBy = st.likedBy.includes(me.id) ? st.likedBy.filter((x) => x !== me.id) : [...st.likedBy, me.id];
+    return st.likedBy.includes(me.id);
+  });
+}
+
+/** Story replies arrive in the business's messages, with the story as context. */
+export function replyToStory(id: ID, text: string) {
+  return mutate((db, u) => {
+    const me = requireUser(u);
+    assert(me.role === "customer", "תגובה לסטורי נשלחת מחשבון לקוח");
+    if (!text.trim()) throw new Error("ההודעה ריקה");
+    const st = db.stories.find((x) => x.id === id)!;
+    let c = db.conversations.find((x) => x.customerId === me.id && x.businessId === st.businessId);
+    if (!c) {
+      c = { id: uid("cv"), customerId: me.id, businessId: st.businessId, messages: [], lastReadAt: {}, createdAt: nowISO() };
+      db.conversations.unshift(c);
+    }
+    if (c.blockedBy) throw new Error("השיחה חסומה");
+    c.messages.push({ id: uid("m"), senderId: me.id, text: `↩︎ הגיב/ה לסטורי: ${text.trim()}`, attachmentPostId: st.sharedPostId, createdAt: nowISO() });
+    c.lastReadAt[me.id] = nowISO();
+    const b = db.businesses.find((x) => x.id === st.businessId)!;
+    notify(db, b.ownerId, "messages", `${me.name} הגיב/ה לסטורי`, text.slice(0, 80), `/messages/${c.id}`);
+    return c.id;
   });
 }
 
@@ -209,14 +316,25 @@ export function blockUser(userId: ID, on = true) {
   });
 }
 
-export function trackEvent(type: "view" | "profile_visit" | "booking_start", businessId: ID, postId?: ID) {
+export function trackEvent(type: "view" | "profile_visit" | "booking_start" | "share" | "follow", businessId: ID, postId?: ID, source?: TrafficSource) {
   mutate(
     (db) => {
-      db.analytics.push({ id: uid("ev"), type, businessId, postId, at: nowISO() });
+      db.analytics.push({ id: uid("ev"), type, businessId, postId, source, at: nowISO() });
       if (type === "view" && postId) {
         const p = db.posts.find((x) => x.id === postId);
         if (p) p.views++;
       }
+    },
+    { silent: true },
+  );
+}
+
+/** One watch session of a reel: seconds watched and whether it reached the end. */
+export function trackWatch(businessId: ID, postId: ID, seconds: number, completed: boolean, source: TrafficSource) {
+  if (seconds < 0.5) return;
+  mutate(
+    (db) => {
+      db.analytics.push({ id: uid("w"), type: "watch", businessId, postId, seconds: Math.round(seconds * 10) / 10, completed, source, at: nowISO() });
     },
     { silent: true },
   );

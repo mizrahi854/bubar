@@ -4,8 +4,9 @@ import { AlertTriangle, Bell, Bookmark, CalendarPlus, ChevronDown, Heart, Info, 
 import clsx from "clsx";
 import { rankFeed, type FeedTab, type RankedPost } from "../domain/feed";
 import { CATEGORY_LABEL, compact, duration, price } from "../domain/format";
-import type { MediaItem, Post } from "../domain/types";
-import { isSaved, savePost, sharePostCount, toggleFollowBusiness, toggleLike, trackEvent } from "../store/actions";
+import type { MediaItem, Post, TrafficSource } from "../domain/types";
+import { isSaved, savePost, sharePostCount, toggleFollowBusiness, toggleLike, trackEvent, trackWatch } from "../store/actions";
+import { Overlays, RichText, filterCss } from "../ui/media-fx";
 import { gate, toast, useApp, useMe, useMode } from "../store/app";
 import { shareLink } from "../integrations/share";
 import { useMediaUrl, useReducedMotion } from "../ui/hooks";
@@ -13,6 +14,7 @@ import { Avatar, Button, EmptyState, btn } from "../ui/kit";
 import { Sheet } from "../ui/overlays";
 import { CommentsSheet, PostMoreSheet, ReportSheet, SaveSheet } from "./social-sheets";
 import { CityPicker } from "./city-picker";
+import { StoryAvatar, hasLiveStory } from "./stories";
 import { unreadMessages, unreadNotifications } from "../ui/shell";
 
 const TABS: { id: FeedTab; label: string }[] = [
@@ -120,6 +122,8 @@ function FeedEmpty({ tab, cityName, onPickCity }: { tab: FeedTab; cityName?: str
 }
 
 /** Vertical snap list; exactly one item is active and only it may play. */
+const sourceOf = (tabKey: string): TrafficSource => (tabKey === "following" ? "following" : tabKey === "nearby" ? "nearby" : tabKey === "for_you" ? "feed" : "share");
+
 export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: RankedPost[]; tabKey: string; empty?: React.ReactNode; startIndex?: number }) {
   const scroller = useRef<HTMLDivElement>(null);
   const saved = useApp((s) => (tabKey in s.feedIndex ? s.feedIndex[tabKey as FeedTab] : 0));
@@ -175,14 +179,14 @@ export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: Rank
   return (
     <div ref={scroller} className="no-scrollbar h-full snap-y snap-mandatory overflow-y-auto overscroll-contain" aria-label="פיד עבודות">
       {items.map((it, i) => (
-        <FeedItem key={it.post.id} item={it} index={i} active={i === active} near={Math.abs(i - active) <= 1} pageVisible={visible} muted={muted} onToggleMute={() => setMuted((m) => !m)} />
+        <FeedItem key={it.post.id} item={it} index={i} active={i === active} near={Math.abs(i - active) <= 1} pageVisible={visible} muted={muted} onToggleMute={() => setMuted((m) => !m)} source={sourceOf(tabKey)} />
       ))}
       <div className="flex h-40 snap-end items-center justify-center text-sm text-white/70">ראית הכול כרגע ✨</div>
     </div>
   );
 }
 
-function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute }: { item: RankedPost; index: number; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void }) {
+function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute, source }: { item: RankedPost; index: number; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; source: TrafficSource }) {
   const { post, business, service } = item;
   const db = useApp((s) => s.db);
   const me = useMe();
@@ -241,7 +245,7 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute 
     <section data-index={index} aria-label={`${post.kind === "reel" ? "רילס" : "פוסט"} של ${business.name}`} className="relative flex h-[100dvh] snap-start snap-always items-center justify-center lg:py-4">
       <div className="relative h-full w-full overflow-hidden bg-[#111] lg:aspect-[9/16] lg:h-full lg:w-auto lg:rounded-[28px]">
         {post.kind === "reel" ? (
-          <ReelVideo media={post.media[0]} active={active} near={near} pageVisible={pageVisible} muted={muted} onToggleMute={onToggleMute} onDoubleTap={() => !liked && like()} />
+          <ReelVideo media={post.media[0]} active={active} near={near} pageVisible={pageVisible} muted={muted} onToggleMute={onToggleMute} onDoubleTap={() => !liked && like()} onWatch={(sec, done) => trackWatch(business.id, post.id, sec, done, source)} />
         ) : (
           <ImageMedia media={post.media} onDoubleTap={() => !liked && like()} />
         )}
@@ -259,13 +263,29 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute 
         <div className="absolute start-3 top-[calc(4.5rem+env(safe-area-inset-top))] flex flex-col items-start gap-1.5 lg:top-16">
           {item.campaignId && <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-bold text-[#111]">ממומן</span>}
           {post.isSample && <span className="rounded-full bg-black/50 px-2.5 py-0.5 text-[11px] font-medium text-white backdrop-blur">תוכן לדוגמה · איור מקורי</span>}
+          {(post.media[0]?.sourceReelUrl || post.media[0]?.creator) && (
+            <a
+              href={post.media[0].sourceReelUrl ?? post.media[0].sourceProfileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full bg-black/50 px-2.5 py-0.5 text-[11px] font-medium text-white backdrop-blur underline-offset-2 hover:underline"
+            >
+              קרדיט: {post.media[0].creator ?? "המקור המקורי"} ↗
+            </a>
+          )}
         </div>
 
         {/* Bottom info */}
         <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2.5 p-4 pb-[calc(6.25rem+env(safe-area-inset-bottom))] pe-[4.5rem] lg:pb-5 lg:pe-4">
           <div className="flex items-center gap-2.5">
+            {hasLiveStory(db, business.id) ? (
+              <StoryAvatar business={business} size={40} dark />
+            ) : (
+              <Link to={`/b/${business.id}`} aria-hidden tabIndex={-1}>
+                <Avatar src={business.avatar} name={business.name} size={42} ring />
+              </Link>
+            )}
             <Link to={`/b/${business.id}`} className="flex min-w-0 items-center gap-2.5">
-              <Avatar src={business.avatar} name={business.name} size={42} ring />
               <span className="min-w-0">
                 <span className="block truncate font-bold text-shadow">{business.name}</span>
                 <span className="block truncate text-xs text-white/80">
@@ -280,13 +300,15 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute 
               </button>
             )}
           </div>
-          <p className="line-clamp-2 text-[15px] leading-snug text-shadow">{post.caption}</p>
+          <p className="line-clamp-2 text-[15px] leading-snug text-shadow">
+            <RichText text={post.caption} resolveHandle={(h) => { const b = db.businesses.find((x) => x.username === h); return b ? `/b/${b.id}` : null; }} />
+          </p>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-white/85">
             <span className="inline-flex items-center gap-1">
               <MapPin className="size-3.5" aria-hidden /> {business.isMobile ? `שירות נייד · ${city?.name}` : city?.name}
             </span>
             {post.tags.slice(0, 3).map((t) => (
-              <Link key={t} to={`/discover?tag=${encodeURIComponent(t)}`} className="rounded-full bg-white/15 px-2 py-0.5 hover:bg-white/25">
+              <Link key={t} to={`/tag/${encodeURIComponent(t)}`} className="rounded-full bg-white/15 px-2 py-0.5 hover:bg-white/25">
                 #{t}
               </Link>
             ))}
@@ -403,8 +425,26 @@ function WhySheet({ item, open, onClose }: { item: RankedPost; open: boolean; on
 }
 
 /** Plays only when active and the page is visible. Poster first; resilient to failures. */
-function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDoubleTap }: { media: MediaItem; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; onDoubleTap: () => void }) {
+function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDoubleTap, onWatch }: { media: MediaItem; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; onDoubleTap: () => void; onWatch?: (seconds: number, completed: boolean) => void }) {
   const ref = useRef<HTMLVideoElement>(null);
+  // Watch time for creator insights: seconds actually played while this reel is the active one
+  const watch = useRef({ seconds: 0, last: -1, completed: false });
+  const onWatchRef = useRef(onWatch);
+  onWatchRef.current = onWatch;
+  useEffect(() => {
+    if (active) {
+      watch.current = { seconds: 0, last: -1, completed: false };
+      return;
+    }
+    if (watch.current.seconds > 0) onWatchRef.current?.(watch.current.seconds, watch.current.completed);
+    watch.current = { seconds: 0, last: -1, completed: false };
+  }, [active]);
+  useEffect(
+    () => () => {
+      if (watch.current.seconds > 0) onWatchRef.current?.(watch.current.seconds, watch.current.completed);
+    },
+    [],
+  );
   const src = useMediaUrl(media.src);
   const poster = useMediaUrl(media.poster);
   const { autoplay, dataSaver } = useApp((s) => s.settings);
@@ -428,8 +468,15 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
   const onTime = useCallback(() => {
     const v = ref.current;
     if (!v) return;
+    const w = watch.current;
+    if (active && !v.paused) {
+      if (w.last >= 0 && v.currentTime > w.last && v.currentTime - w.last < 1.5) w.seconds += v.currentTime - w.last;
+      const end = media.trimEnd ?? v.duration;
+      if (end && v.currentTime >= end - 0.35) w.completed = true;
+    }
+    w.last = v.currentTime;
     if (media.trimEnd && v.currentTime >= media.trimEnd) v.currentTime = media.trimStart ?? 0;
-  }, [media.trimEnd, media.trimStart]);
+  }, [media.trimEnd, media.trimStart, active]);
 
   const toggle = () => {
     const v = ref.current;
@@ -465,6 +512,7 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
         <video
           ref={ref}
           className="media absolute inset-0 size-full object-cover"
+          style={{ filter: filterCss(media.filter) }}
           poster={poster ?? undefined}
           muted={muted}
           playsInline
@@ -485,6 +533,7 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
           {media.srcWebm && <source src={media.srcWebm} type="video/webm" onError={() => setState("error")} />}
         </video>
       )}
+      <Overlays items={media.overlays} />
       <div className="pointer-events-none absolute inset-0 grid place-items-center">
         {active && state === "loading" && <Loader2 className="size-10 animate-spin text-white/80" aria-label="טוען סרטון" />}
         {active && state === "paused" && (
@@ -582,8 +631,9 @@ function ImageSlide({ media, label }: { media: MediaItem; label: string }) {
       {failed ? (
         <div className="grid size-full place-items-center text-sm text-white/70">התמונה לא נטענה</div>
       ) : (
-        url && <img src={url} alt={label} className="media size-full object-cover" onError={() => setFailed(true)} />
+        url && <img src={url} alt={label} className="media size-full object-cover" style={{ filter: filterCss(media.filter) }} onError={() => setFailed(true)} />
       )}
+      <Overlays items={media.overlays} />
     </div>
   );
 }
