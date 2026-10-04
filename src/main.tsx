@@ -33,8 +33,34 @@ import { BizSettingsScreen } from "./screens/manage/settings";
 import { BizReviewsScreen } from "./screens/manage/reviews";
 import { PromoteScreen } from "./screens/manage/promote";
 import { AdminScreen } from "./screens/admin";
+import { BizShell } from "./biz/ui";
+import { BizLoginScreen } from "./biz/screens/Login";
+import { OnboardingScreen } from "./biz/screens/Onboarding";
+import { ActivityScreen } from "./biz/screens/Activity";
+import { CalendarScreen as BizCalendarScreen } from "./biz/screens/Calendar";
+import { CustomersScreen as BizCustomersScreen, CustomerDetailScreen } from "./biz/screens/Customers";
+import { WaitlistScreen } from "./biz/screens/Waitlist";
+import { BizSettingsScreen as ProSettingsScreen } from "./biz/screens/Settings";
+import { PublicBookingScreen } from "./biz/screens/PublicBooking";
 
 const routes: RouteObject[] = [
+  // Beautigo Pro — business management on Supabase (or the in-browser preview)
+  { path: "/biz/login", element: <BizLoginScreen /> },
+  {
+    path: "/biz",
+    element: <BizShell />,
+    children: [
+      { index: true, element: <ActivityScreen /> },
+      { path: "onboarding", element: <OnboardingScreen /> },
+      { path: "calendar", element: <BizCalendarScreen /> },
+      { path: "customers", element: <BizCustomersScreen /> },
+      { path: "customers/:id", element: <CustomerDetailScreen /> },
+      { path: "waitlist", element: <WaitlistScreen /> },
+      { path: "settings", element: <ProSettingsScreen /> },
+      { path: "*", element: <Navigate to="/biz" replace /> },
+    ],
+  },
+  { path: "/p/:slug", element: <PublicBookingScreen /> },
   {
     element: <AppShell />,
     children: [

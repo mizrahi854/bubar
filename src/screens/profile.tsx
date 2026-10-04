@@ -22,7 +22,7 @@ export function ProfileScreen() {
         <TopBar title="פרופיל" large />
         <Page className="max-w-xl">
           <EmptyState icon={<LogIn className="size-6" aria-hidden />} title="עוד לא התחברת" text="אפשר לגלוש בלי חשבון. כדי לשמור, לעקוב ולקבוע תורים — התחברו." action={<LinkButton to="/signin?next=/profile">התחברות או הרשמה</LinkButton>} />
-          <Menu items={[{ to: "/settings", label: "הגדרות ונגישות", icon: Settings }, { to: "/demo", label: "מצב דמו · החלפת תפקיד", icon: FlaskConical }]} />
+          <Menu items={[{ to: "/settings", label: "הגדרות ונגישות", icon: Settings }, { to: "/biz", label: "Beautigo Pro · מערכת ניהול לעסק", icon: Briefcase }, { to: "/demo", label: "מצב דמו · החלפת תפקיד", icon: FlaskConical }]} />
         </Page>
       </>
     );
@@ -104,6 +104,7 @@ export function ProfileScreen() {
             { to: "/messages", label: "הודעות", icon: MessageCircle },
             { to: "/notifications", label: "התראות", icon: Bell },
             { to: "/settings", label: "הגדרות, פרטיות ונגישות", icon: Settings },
+            { to: "/biz", label: "Beautigo Pro · מערכת ניהול לעסק", icon: Briefcase },
             { to: "/demo", label: "מצב דמו · החלפת תפקיד", icon: FlaskConical },
           ]}
         />

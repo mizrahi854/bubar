@@ -23,6 +23,11 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  /* Management system (Beautigo Pro) accent — used only under /biz */
+  --color-brand: var(--brand);
+  --color-brand-2: var(--brand-2);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-ink: var(--brand-ink);
   --radius-card: 24px;
   --animate-rise: rise 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   --animate-fade: fade 180ms ease-out both;
@@ -47,6 +52,10 @@
   --bad-soft: #fdeaea;
   --info: #1f5fbf;
   --info-soft: #e9f0fc;
+  --brand: #5b3df5;
+  --brand-2: #8a6cff;
+  --brand-soft: #efebff;
+  --brand-ink: #ffffff;
   --glass-rgb: 255 255 255;
   --glass-text: #111111;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 10px 30px -12px rgb(0 0 0 / 0.18);
@@ -54,6 +63,10 @@
 }
 
 [data-theme="dark"] {
+  --brand: #8f78ff;
+  --brand-2: #b3a2ff;
+  --brand-soft: #241d45;
+  --brand-ink: #ffffff;
   --bg: #0b0b0c;
   --surface: #1c1c1e;
   --surface-2: #2a2a2d;

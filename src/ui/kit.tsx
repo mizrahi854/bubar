@@ -5,7 +5,7 @@ import { Link } from "react-router";
 
 export { clsx as cx };
 
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "glass" | "inverse";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "glass" | "inverse" | "brand" | "brand-soft";
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-ink text-ink-inverse hover:opacity-90",
   secondary: "bg-surface text-ink hover:bg-surface-2",
@@ -13,6 +13,8 @@ const VARIANTS: Record<Variant, string> = {
   danger: "bg-bad-soft text-bad hover:opacity-90",
   glass: "glass-light text-[#111] hover:bg-white",
   inverse: "bg-white text-[#111] hover:bg-white/90",
+  brand: "bg-brand text-brand-ink hover:opacity-90 shadow-[0_8px_20px_-8px_var(--brand)]",
+  "brand-soft": "bg-brand-soft text-brand hover:opacity-90",
 };
 const SIZES = { sm: "h-9 px-3.5 text-sm gap-1.5", md: "h-12 px-5 text-[15px] gap-2", lg: "h-[52px] px-6 text-base gap-2" };
 
