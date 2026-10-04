@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
-import { Check, Clock, MapPin, Phone } from "lucide-react";
+import { Check, Clock, MapPin, MessageCircle, Phone } from "lucide-react";
 import clsx from "clsx";
 import { DateTime } from "luxon";
 import { backend, type PartOfDay } from "../backend";
@@ -9,7 +9,8 @@ import { toE164 } from "../slots";
 import { PreviewBanner, StatusPill, TZ, fmtDay, fmtShort, fmtTime, ils, run, useLoad } from "../ui";
 import { LoginCard } from "./Login";
 import { Button, EmptyState, Field, Input, Textarea } from "../../ui/kit";
-import { ConfirmDialog } from "../../ui/overlays";
+import { ConfirmDialog, Sheet } from "../../ui/overlays";
+import { ChatThread } from "./Messages";
 import { useAppearance } from "../../ui/hooks";
 import { Toaster } from "../../ui/overlays";
 
@@ -30,6 +31,7 @@ export function PublicBookingScreen() {
   const [form, setForm] = useState({ name: "", phone: "", note: "" });
   const [done, setDone] = useState<null | "booked" | "pending" | "waitlist">(null);
   const [busy, setBusy] = useState(false);
+  const [chat, setChat] = useState<{ open: boolean; appointmentId: string | null }>({ open: false, appointmentId: null });
   const [wait, setWait] = useState({ from: day, to: DateTime.now().setZone(TZ).plus({ days: 7 }).toISODate()!, part: "any" as PartOfDay });
 
   useEffect(() => {
@@ -90,6 +92,9 @@ export function PublicBookingScreen() {
               </span>
             )}
           </p>
+          <button type="button" onClick={() => setChat({ open: true, appointmentId: null })} className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-sm font-bold text-[#111]">
+            <MessageCircle className="size-4" aria-hidden /> שליחת הודעה לעסק
+          </button>
         </div>
       </header>
       <main className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-6">
@@ -231,8 +236,9 @@ export function PublicBookingScreen() {
             )}
           </>
         )}
-        {user && <MyAppointments list={mine.data ?? []} reload={mine.reload} cancelHours={c.business.cancel_hours} />}
+        {user && <MyAppointments list={mine.data ?? []} reload={mine.reload} cancelHours={c.business.cancel_hours} onMessage={(appointmentId) => setChat({ open: true, appointmentId })} />}
       </main>
+      <CustomerChat open={chat.open} appointmentId={chat.appointmentId} onClose={() => setChat({ open: false, appointmentId: null })} businessId={c.business.id} businessName={c.business.name} name={form.name} phone={form.phone} />
       <Toaster />
     </div>
   );
@@ -246,7 +252,7 @@ function PillBtn({ on, onClick, children }: { on: boolean; onClick: () => void; 
   );
 }
 
-function MyAppointments({ list, reload, cancelHours }: { list: import("../backend").Appointment[]; reload: () => void; cancelHours: number }) {
+function MyAppointments({ list, reload, cancelHours, onMessage }: { list: import("../backend").Appointment[]; reload: () => void; cancelHours: number; onMessage: (appointmentId: string) => void }) {
   const [cancel, setCancel] = useState<string | null>(null);
   const upcoming = list.filter((a) => (a.status === "confirmed" || a.status === "pending") && Date.parse(a.starts_at) > Date.now());
   if (!list.length) return null;
@@ -263,6 +269,9 @@ function MyAppointments({ list, reload, cancelHours }: { list: import("../backen
                 <span className="num text-muted">{fmtShort(a.starts_at)}</span>
               </span>
               <StatusPill status={a.status} />
+              <button type="button" onClick={() => onMessage(a.id)} className="grid size-9 place-items-center rounded-full hover:bg-surface" aria-label="הודעה לעסק על התור">
+                <MessageCircle className="size-4" aria-hidden />
+              </button>
               {canCancel && (
                 <Button size="sm" variant="ghost" onClick={() => setCancel(a.id)}>
                   ביטול
@@ -289,5 +298,43 @@ function MyAppointments({ list, reload, cancelHours }: { list: import("../backen
         }
       />
     </section>
+  );
+}
+
+/** Customer ↔ business chat in a sheet. Signs the customer in first when needed. */
+function CustomerChat({ open, onClose, businessId, businessName, appointmentId, name, phone }: { open: boolean; onClose: () => void; businessId: string; businessName: string; appointmentId: string | null; name: string; phone: string }) {
+  const { user } = useSession();
+  const [id, setId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !user) return;
+    let alive = true;
+    setError(null);
+    backend
+      .myConversation(businessId, { fullName: name || user.name, phone: phone ? (toE164(phone) ?? "") : "", appointmentId })
+      .then((x) => alive && setId(x))
+      .catch((e) => alive && setError((e as Error).message));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, user?.id, businessId, appointmentId]);
+  return (
+    <Sheet open={open} onClose={onClose} title={`הודעה ל${businessName}`}>
+      {!user ? (
+        <LoginCard title="כניסה כדי לשלוח הודעה" subtitle="קוד חד־פעמי בטלפון או Google. כך העסק יוכל לענות לך." />
+      ) : error ? (
+        <p role="alert" className="rounded-2xl bg-bad-soft p-3 text-sm text-bad">
+          {error}
+        </p>
+      ) : id ? (
+        <div className="flex h-[60dvh] flex-col">
+          {appointmentId && <p className="mb-1 rounded-xl bg-surface p-2 text-xs text-muted">ההודעה תצורף לתור שבחרת.</p>}
+          <ChatThread conversationId={id} side="customer" businessId={businessId} />
+        </div>
+      ) : (
+        <p className="text-sm text-muted">פותחים שיחה…</p>
+      )}
+    </Sheet>
   );
 }

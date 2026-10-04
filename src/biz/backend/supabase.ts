@@ -7,10 +7,13 @@ import type {
   Business,
   Catalogue,
   ChangeEvent,
+  Conversation,
   Customer,
+  CustomerPhoto,
   CustomerRow,
   GoogleStatus,
   Membership,
+  Message,
   Professional,
   Range,
   Service,
@@ -39,6 +42,25 @@ function toUser(u: User | null | undefined): SessionUser | null {
 }
 
 const APPT_SELECT = "*, customers(full_name, phone)";
+const PHOTOS = "customer-photos";
+
+function toConversation(r: Row): Conversation {
+  const c = r.customers as { full_name: string; phone: string } | null;
+  const last = r.last_message_at as string;
+  const read = r.business_read_at as string | null;
+  return {
+    id: r.id as string,
+    business_id: r.business_id as string,
+    customer_id: r.customer_id as string,
+    customer_name: c?.full_name ?? "",
+    customer_phone: c?.phone ?? "",
+    appointment_id: (r.appointment_id as string) ?? null,
+    last_message: r.last_message as string,
+    last_message_at: last,
+    last_sender: (r.last_sender as Conversation["last_sender"]) ?? null,
+    unread: r.last_sender === "customer" && (!read || read < last),
+  };
+}
 function toAppt(r: Row): Appointment {
   const c = r.customers as { full_name: string; phone: string } | null;
   return { ...(r as unknown as Appointment), price: Number(r.price), customer_name: c?.full_name ?? "", customer_phone: c?.phone ?? "" };
@@ -262,10 +284,76 @@ export function supabaseBackend(url: string, anonKey: string): Backend {
       return { customer: c.data as Customer, appointments: (a.data as Row[]).map(toAppt) };
     },
     async saveCustomer(businessId, i) {
-      const row = { business_id: businessId, full_name: i.full_name, phone: i.phone, email: i.email ?? null, notes: i.notes ?? "" };
+      const row: Row = { business_id: businessId, full_name: i.full_name, phone: i.phone, email: i.email ?? null };
+      for (const k of ["notes", "tags", "birthday", "preferences"] as const) if (i[k] !== undefined) row[k] = i[k];
       const r = i.id ? await sb.from("customers").update(row).eq("id", i.id).select().single() : await sb.from("customers").insert(row).select().single();
       fail(r.error);
       return r.data as Customer;
+    },
+    async customerPhotos(customerId) {
+      const r = await sb.from("customer_photos").select("*").eq("customer_id", customerId).order("created_at", { ascending: false });
+      fail(r.error);
+      const rows = r.data as (Row & { path: string })[];
+      if (!rows.length) return [];
+      const signed = await sb.storage.from(PHOTOS).createSignedUrls(rows.map((x) => x.path), 3600);
+      return rows.map((x, i) => ({ ...(x as unknown as CustomerPhoto), url: signed.data?.[i]?.signedUrl ?? "" }));
+    },
+    async addCustomerPhoto(businessId, customerId, file, kind, caption) {
+      const ext = (file.type.split("/")[1] ?? "jpg").replace("jpeg", "jpg");
+      const path = `${businessId}/${customerId}/${crypto.randomUUID()}.${ext}`;
+      const up = await sb.storage.from(PHOTOS).upload(path, file, { contentType: file.type || "image/jpeg" });
+      if (up.error) throw new BackendError(`העלאת התמונה נכשלה: ${up.error.message}`);
+      fail((await sb.from("customer_photos").insert({ business_id: businessId, customer_id: customerId, path, kind, caption })).error);
+    },
+    async removeCustomerPhoto(photo) {
+      const r = await sb.from("customer_photos").delete().eq("id", photo.id).select("path").single();
+      fail(r.error);
+      await sb.storage.from(PHOTOS).remove([(r.data as { path: string }).path]);
+    },
+
+    async conversations(businessId) {
+      const r = await sb.from("conversations").select("*, customers(full_name, phone)").eq("business_id", businessId).order("last_message_at", { ascending: false }).limit(200);
+      fail(r.error);
+      return (r.data as Row[]).map(toConversation);
+    },
+    async messages(conversationId) {
+      const r = await sb.from("messages").select("id, conversation_id, sender, body, created_at").eq("conversation_id", conversationId).order("id").limit(500);
+      fail(r.error);
+      return r.data as Message[];
+    },
+    async conversationWith(businessId, customerId) {
+      const found = await sb.from("conversations").select("id").eq("business_id", businessId).eq("customer_id", customerId).maybeSingle();
+      fail(found.error);
+      if (found.data) return (found.data as { id: string }).id;
+      const r = await sb.from("conversations").insert({ business_id: businessId, customer_id: customerId }).select("id").single();
+      fail(r.error);
+      return (r.data as { id: string }).id;
+    },
+    async sendAsBusiness(businessId, conversationId, body) {
+      const { data: u } = await sb.auth.getUser();
+      fail((await sb.from("messages").insert({ conversation_id: conversationId, business_id: businessId, sender: "business", sender_user: u.user?.id, body: body.trim() })).error);
+    },
+    async markReadByBusiness(conversationId) {
+      await sb.from("conversations").update({ business_read_at: new Date().toISOString() }).eq("id", conversationId);
+    },
+    async myConversation(businessId, i) {
+      const r = await sb.rpc("start_conversation", { p_business: businessId, p_full_name: i.fullName, p_phone: i.phone, p_appointment: i.appointmentId ?? null });
+      fail(r.error);
+      return r.data as string;
+    },
+    async sendAsCustomer(businessId, conversationId, body) {
+      const { data: u } = await sb.auth.getUser();
+      fail((await sb.from("messages").insert({ conversation_id: conversationId, business_id: businessId, sender: "customer", sender_user: u.user?.id, body: body.trim() })).error);
+    },
+    async markReadByCustomer(conversationId) {
+      await sb.from("conversations").update({ customer_read_at: new Date().toISOString() }).eq("id", conversationId);
+    },
+    subscribeConversation(conversationId, cb) {
+      const ch = sb
+        .channel(`conv-${conversationId}`)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${conversationId}` }, (p) => cb(p.new as Message))
+        .subscribe();
+      return () => void sb.removeChannel(ch);
     },
 
     async waitlist(businessId) {
@@ -307,6 +395,8 @@ export function supabaseBackend(url: string, anonKey: string): Backend {
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity", filter: `business_id=eq.${businessId}` }, (p) => cb({ table: "activity", row: p.new as Activity }))
         .on("postgres_changes", { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${businessId}` }, () => cb({ table: "appointments" }))
         .on("postgres_changes", { event: "*", schema: "public", table: "waitlist", filter: `business_id=eq.${businessId}` }, () => cb({ table: "waitlist" }))
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `business_id=eq.${businessId}` }, (p) => cb({ table: "messages", row: p.new as Message }))
+        .on("postgres_changes", { event: "*", schema: "public", table: "conversations", filter: `business_id=eq.${businessId}` }, () => cb({ table: "conversations" }))
         .subscribe();
       return () => void sb.removeChannel(ch);
     },

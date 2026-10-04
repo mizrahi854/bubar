@@ -120,3 +120,61 @@ test("staff see only their own column and no customer list", async ({ page }) =>
   await page.goto("/#/biz/settings");
   await expect(page.getByText(/מחובר\/ת כחבר\/ת צוות/)).toBeVisible();
 });
+
+test("customer messages a business from its page; the business replies from the inbox", async ({ page }) => {
+  await as(page, null, "/p/studio-nova");
+  await page.getByRole("button", { name: "שליחת הודעה לעסק" }).click();
+  const sheet = page.getByRole("dialog", { name: /הודעה ל/ });
+  await sheet.getByLabel("מספר טלפון").fill("050-4443322");
+  await sheet.getByRole("button", { name: "שליחת קוד" }).click();
+  await sheet.getByLabel(/הקוד שנשלח/).fill("123456");
+  await sheet.getByRole("button", { name: "כניסה", exact: true }).click();
+  await sheet.getByLabel("הודעה", { exact: true }).fill("היי, יש מקום ביום חמישי?");
+  await sheet.getByRole("button", { name: "שליחה" }).click();
+  await expect(sheet.getByText("היי, יש מקום ביום חמישי?")).toBeVisible();
+
+  // Business side (same browser, preview data)
+  await page.evaluate(() => localStorage.setItem("beautigo.pro.preview.user", "preview-owner"));
+  await page.reload();
+  await page.goto("/#/biz/messages");
+  const row = page.getByRole("link", { name: /היי, יש מקום ביום חמישי\?/ });
+  await expect(row).toBeVisible();
+  await expect(row.getByLabel("לא נקרא")).toBeVisible();
+  await row.click();
+  await page.getByRole("button", { name: "תודה! נתראה בתור" }).click();
+  await page.getByRole("button", { name: "שליחה" }).click();
+  await expect(page.getByText("תודה! נתראה בתור").last()).toBeVisible();
+  await page.goto("/#/biz");
+  await expect(page.getByText(/: היי, יש מקום ביום חמישי\?/).first()).toBeVisible();
+});
+
+test("customer card: tags, birthday, preferences, before/after photo and a chat", async ({ page }) => {
+  await as(page, "preview-owner", "/biz/customers/cus-3");
+  await page.getByRole("button", { name: "עריכה" }).click();
+  const sheet = page.getByRole("dialog", { name: "עריכת כרטיס לקוח" });
+  await sheet.getByRole("button", { name: "+ כלה" }).click();
+  await sheet.getByLabel("תאריך לידה").fill("1995-06-20");
+  await sheet.getByLabel("העדפות ופורמולות").fill("גוון 8.3 · עור רגיש");
+  await sheet.getByRole("button", { name: "שמירה" }).click();
+  await expect(page.getByText("כלה", { exact: true })).toBeVisible();
+  await expect(page.getByText("גוון 8.3 · עור רגיש")).toBeVisible();
+  await expect(page.getByText(/יום הולדת/)).toBeVisible();
+  // a tiny PNG as the "before" photo
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  await page.locator("input[type=file]").setInputFiles({ name: "before.png", mimeType: "image/png", buffer: png });
+  await expect(page.getByRole("button", { name: /^לפני ·/ })).toBeVisible();
+  await page.getByRole("button", { name: "הודעה", exact: true }).click();
+  await expect(page).toHaveURL(/#\/biz\/messages\//);
+  await expect(page.getByLabel("הודעה", { exact: true })).toBeVisible();
+});
+
+test("reports show revenue, breakdowns and a table view", async ({ page }) => {
+  await as(page, "preview-owner", "/biz/reports");
+  await expect(page.getByText("הכנסות", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "לפי איש צוות" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "שעות עמוסות" })).toBeVisible();
+  await page.getByRole("button", { name: "תצוגת טבלה" }).click();
+  await expect(page.getByRole("columnheader", { name: "הכנסות" })).toBeVisible();
+  await page.getByRole("radio", { name: "שנה" }).click();
+  await expect(page.getByRole("heading", { name: "לפי שירות" })).toBeVisible();
+});

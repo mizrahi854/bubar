@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router";
-import { Bell, CalendarDays, ChevronDown, Clock3, LayoutList, LogOut, Settings, Sparkles, Users } from "lucide-react";
+import { BarChart3, Bell, CalendarDays, ChevronDown, Clock3, Compass, LayoutList, LogOut, Menu, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
 import clsx from "clsx";
 import { DateTime } from "luxon";
 import { backend, isPreview, type ChangeEvent } from "./backend";
 import { useMembership, useSession, useSessionBoot } from "./session";
 import { useAppearance } from "../ui/hooks";
-import { Toaster } from "../ui/overlays";
+import { Sheet, Toaster } from "../ui/overlays";
+import { useUnreadCount } from "./screens/Messages";
 import { toast } from "../store/app";
 
 export const TZ = "Asia/Jerusalem";
@@ -95,11 +96,15 @@ export function PreviewBanner() {
   );
 }
 
-const NAV = [
-  { to: "/biz", label: "פעילות", icon: Sparkles, end: true },
-  { to: "/biz/calendar", label: "יומן", icon: CalendarDays },
-  { to: "/biz/customers", label: "לקוחות", icon: Users, owner: true },
-  { to: "/biz/waitlist", label: "המתנה", icon: Clock3 },
+type NavItem = { to: string; label: string; icon: typeof Sparkles; end?: boolean; owner?: boolean; mobile?: boolean; badge?: boolean };
+const NAV: NavItem[] = [
+  { to: "/biz", label: "פעילות", icon: Sparkles, end: true, mobile: true },
+  { to: "/biz/calendar", label: "יומן", icon: CalendarDays, mobile: true },
+  { to: "/biz/messages", label: "הודעות", icon: MessageCircle, mobile: true, badge: true },
+  { to: "/biz/customers", label: "לקוחות", icon: Users, owner: true, mobile: true },
+  { to: "/biz/waitlist", label: "רשימת המתנה", icon: Clock3 },
+  { to: "/biz/reports", label: "דוחות והכנסות", icon: BarChart3, owner: true },
+  { to: "/biz/tour", label: "כל היכולות", icon: Compass },
   { to: "/biz/settings", label: "הגדרות", icon: Settings },
 ];
 
@@ -108,7 +113,6 @@ export function BizShell() {
   useAppearance();
   useSessionBoot();
   const { ready, user, memberships } = useSession();
-  const m = useMembership();
   const loc = useLocation();
   if (!ready)
     return (
@@ -118,7 +122,19 @@ export function BizShell() {
     );
   if (!user) return <Navigate to={`/biz/login?next=${encodeURIComponent(loc.pathname)}`} replace />;
   if (!memberships.length && loc.pathname !== "/biz/onboarding") return <Navigate to="/biz/onboarding" replace />;
+  return <ShellInner />;
+}
+
+function ShellInner() {
+  const m = useMembership();
+  const loc = useLocation();
+  const unread = useUnreadCount();
+  const [more, setMore] = useState(false);
   const items = NAV.filter((n) => !n.owner || m?.role === "owner");
+  const mobile = items.filter((n) => n.mobile);
+  const rest = items.filter((n) => !n.mobile);
+  const restActive = rest.some((n) => loc.pathname.startsWith(n.to));
+  const Badge = ({ n }: { n: number }) => (n > 0 ? <span className="num grid h-5 min-w-5 place-items-center rounded-full bg-brand px-1 text-[11px] font-bold text-white">{n > 9 ? "9+" : n}</span> : null);
   return (
     <div className="min-h-dvh bg-bg lg:ps-64">
       <Header />
@@ -128,9 +144,9 @@ export function BizShell() {
           <Logo /> Beautigo <span className="text-brand">Pro</span>
         </Link>
         <nav aria-label="ניווט ניהול" className="flex flex-col gap-1">
-          {items.map(({ to, label, icon: Icon, end }) => (
+          {items.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink key={to} to={to} end={end} className={({ isActive }) => clsx("flex h-11 items-center gap-3 rounded-xl px-3 text-[15px] font-medium", isActive ? "bg-brand-soft font-bold text-brand" : "hover:bg-surface")}>
-              <Icon className="size-5" aria-hidden /> {label}
+              <Icon className="size-5" aria-hidden /> <span className="flex-1">{label}</span> {badge && <Badge n={unread} />}
             </NavLink>
           ))}
         </nav>
@@ -143,16 +159,39 @@ export function BizShell() {
       </main>
       <nav aria-label="ניווט ניהול" className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
         <ul className="mx-auto flex h-16 max-w-md">
-          {items.map(({ to, label, icon: Icon, end }) => (
+          {mobile.map(({ to, label, icon: Icon, end, badge }) => (
             <li key={to} className="flex-1">
-              <NavLink to={to} end={end} className={({ isActive }) => clsx("flex h-16 flex-col items-center justify-center gap-0.5 text-[11px] font-medium", isActive ? "text-brand" : "text-muted")}>
+              <NavLink to={to} end={end} className={({ isActive }) => clsx("relative flex h-16 flex-col items-center justify-center gap-0.5 text-[11px] font-medium", isActive ? "text-brand" : "text-muted")}>
                 <Icon className="size-6" aria-hidden />
                 {label}
+                {badge && unread > 0 && <span className="absolute end-[calc(50%-20px)] top-2 size-2.5 rounded-full bg-brand ring-2 ring-bg" aria-label={`${unread} שיחות שלא נקראו`} />}
               </NavLink>
             </li>
           ))}
+          <li className="flex-1">
+            <button type="button" onClick={() => setMore(true)} className={clsx("flex h-16 w-full flex-col items-center justify-center gap-0.5 text-[11px] font-medium", restActive ? "text-brand" : "text-muted")}>
+              <Menu className="size-6" aria-hidden />
+              עוד
+            </button>
+          </li>
         </ul>
       </nav>
+      <Sheet open={more} onClose={() => setMore(false)} title="עוד">
+        <ul className="flex flex-col gap-1">
+          {rest.map(({ to, label, icon: Icon }) => (
+            <li key={to}>
+              <NavLink to={to} onClick={() => setMore(false)} className={({ isActive }) => clsx("flex h-14 items-center gap-3 rounded-2xl px-4 font-medium", isActive ? "bg-brand-soft text-brand" : "hover:bg-surface")}>
+                <Icon className="size-5" aria-hidden /> {label}
+              </NavLink>
+            </li>
+          ))}
+          <li>
+            <Link to="/" onClick={() => setMore(false)} className="flex h-14 items-center gap-3 rounded-2xl px-4 text-sm text-muted hover:bg-surface">
+              ← לאפליקציית Beautigo
+            </Link>
+          </li>
+        </ul>
+      </Sheet>
       <Toaster />
     </div>
   );

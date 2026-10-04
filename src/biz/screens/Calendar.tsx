@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { Ban, ChevronLeft, ChevronRight, Phone, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Ban, ChevronLeft, ChevronRight, MessageCircle, Phone, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import clsx from "clsx";
 import { DateTime } from "luxon";
 import { backend, type Appointment, type Block, type Catalogue, type CustomerRow, type Professional } from "../backend";
@@ -9,6 +9,7 @@ import { displayPhone, toE164 } from "../slots";
 import { Body, ErrorBox, StatusPill, TZ, fmtDay, fmtTime, ils, local, run, useLoad } from "../ui";
 import { Button, Field, Input, Segmented, Select, Textarea } from "../../ui/kit";
 import { ConfirmDialog, Sheet } from "../../ui/overlays";
+import { useOpenChat } from "./Messages";
 
 type View = "list" | "day" | "week" | "month";
 const DAYS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
@@ -388,6 +389,7 @@ function AppointmentSheet({ id, onClose, cat, pros }: { id: string | null; onClo
   const a = useLoad(() => (id ? backend.appointment(id) : Promise.resolve(null)), [id]);
   const [confirm, setConfirm] = useState<null | "cancel" | "no_show">(null);
   const [move, setMove] = useState(false);
+  const openChat = useOpenChat();
   const x = a.data;
   const after = async (fn: () => Promise<unknown>, ok: string) => {
     if (await run(fn, ok)) {
@@ -460,6 +462,9 @@ function AppointmentSheet({ id, onClose, cat, pros }: { id: string | null; onClo
               </>
             )}
           </div>
+          <Button variant="brand-soft" onClick={() => void openChat(x.customer_id)}>
+            <MessageCircle className="size-4" aria-hidden /> הודעה ל{x.customer_name.split(" ")[0]}
+          </Button>
           {x.google_event_id && <p className="text-xs text-muted">מסונכרן ל־Google Calendar</p>}
         </div>
       )}

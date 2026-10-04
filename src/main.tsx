@@ -40,6 +40,9 @@ import { ActivityScreen } from "./biz/screens/Activity";
 import { CalendarScreen as BizCalendarScreen } from "./biz/screens/Calendar";
 import { CustomersScreen as BizCustomersScreen, CustomerDetailScreen } from "./biz/screens/Customers";
 import { WaitlistScreen } from "./biz/screens/Waitlist";
+import { InboxScreen } from "./biz/screens/Messages";
+import { ReportsScreen } from "./biz/screens/Reports";
+import { TourScreen } from "./biz/screens/Tour";
 import { BizSettingsScreen as ProSettingsScreen } from "./biz/screens/Settings";
 import { PublicBookingScreen } from "./biz/screens/PublicBooking";
 
@@ -56,6 +59,10 @@ const routes: RouteObject[] = [
       { path: "customers", element: <BizCustomersScreen /> },
       { path: "customers/:id", element: <CustomerDetailScreen /> },
       { path: "waitlist", element: <WaitlistScreen /> },
+      { path: "messages", element: <InboxScreen /> },
+      { path: "messages/:id", element: <InboxScreen /> },
+      { path: "reports", element: <ReportsScreen /> },
+      { path: "tour", element: <TourScreen /> },
       { path: "settings", element: <ProSettingsScreen /> },
       { path: "*", element: <Navigate to="/biz" replace /> },
     ],

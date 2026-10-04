@@ -78,6 +78,39 @@ export interface Customer {
   notes: string;
   user_id: ID | null;
   created_at: string;
+  tags: string[];
+  birthday: string | null;
+  preferences: string;
+}
+
+export interface CustomerPhoto {
+  id: ID;
+  customer_id: ID;
+  kind: "before" | "after" | "other";
+  caption: string;
+  url: string;
+  created_at: string;
+}
+
+export interface Conversation {
+  id: ID;
+  business_id: ID;
+  customer_id: ID;
+  customer_name: string;
+  customer_phone: string;
+  appointment_id: ID | null;
+  last_message: string;
+  last_message_at: string;
+  last_sender: "customer" | "business" | null;
+  unread: boolean;
+}
+
+export interface Message {
+  id: number;
+  conversation_id: ID;
+  sender: "customer" | "business";
+  body: string;
+  created_at: string;
 }
 
 export interface CustomerRow extends Customer {
@@ -168,7 +201,18 @@ export interface Slot {
   professional_id: ID;
 }
 
-export type ChangeEvent = { table: "activity"; row: Activity } | { table: "appointments" | "waitlist" | "customers" | "blocks" };
+export type ChangeEvent = { table: "activity"; row: Activity } | { table: "messages"; row: Message } | { table: "appointments" | "waitlist" | "customers" | "blocks" | "conversations" };
+
+export interface CustomerInput {
+  id?: ID;
+  full_name: string;
+  phone: string;
+  email?: string | null;
+  notes?: string;
+  tags?: string[];
+  birthday?: string | null;
+  preferences?: string;
+}
 
 export interface ServiceInput {
   id?: ID;
@@ -229,7 +273,25 @@ export interface Backend {
   // Customers
   customers(businessId: ID, q?: string): Promise<CustomerRow[]>;
   customer(id: ID): Promise<{ customer: Customer; appointments: Appointment[] } | null>;
-  saveCustomer(businessId: ID, input: { id?: ID; full_name: string; phone: string; email?: string | null; notes?: string }): Promise<Customer>;
+  saveCustomer(businessId: ID, input: CustomerInput): Promise<Customer>;
+  customerPhotos(customerId: ID): Promise<CustomerPhoto[]>;
+  addCustomerPhoto(businessId: ID, customerId: ID, file: Blob, kind: CustomerPhoto["kind"], caption: string): Promise<void>;
+  removeCustomerPhoto(photo: CustomerPhoto): Promise<void>;
+
+  // Messages (business side)
+  conversations(businessId: ID): Promise<Conversation[]>;
+  messages(conversationId: ID): Promise<Message[]>;
+  /** Opens (or reuses) the conversation with a customer from the business side. */
+  conversationWith(businessId: ID, customerId: ID): Promise<ID>;
+  sendAsBusiness(businessId: ID, conversationId: ID, body: string): Promise<void>;
+  markReadByBusiness(conversationId: ID): Promise<void>;
+
+  // Messages (customer side)
+  myConversation(businessId: ID, input: { fullName: string; phone: string; appointmentId?: ID | null }): Promise<ID>;
+  sendAsCustomer(businessId: ID, conversationId: ID, body: string): Promise<void>;
+  markReadByCustomer(conversationId: ID): Promise<void>;
+  /** Live updates for one conversation (works for both sides). */
+  subscribeConversation(conversationId: ID, cb: (m: Message) => void): () => void;
 
   // Waitlist
   waitlist(businessId: ID): Promise<WaitlistEntry[]>;

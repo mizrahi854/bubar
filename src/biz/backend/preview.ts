@@ -14,9 +14,13 @@ import type {
   Business,
   Catalogue,
   ChangeEvent,
+  Conversation,
   Customer,
+  CustomerInput,
+  CustomerPhoto,
   GoogleStatus,
   Invite,
+  Message,
   Professional,
   Range,
   Service,
@@ -25,8 +29,9 @@ import type {
 } from "./types";
 import { BackendError } from "./types";
 import { computeSlots } from "../slots";
+import { mediaStore } from "../../data/repository";
 
-const KEY = "beautigo.pro.preview.v1";
+const KEY = "beautigo.pro.preview.v2";
 const USER_KEY = "beautigo.pro.preview.user";
 export const PREVIEW_CODE = "123456";
 
@@ -43,6 +48,9 @@ interface State {
   activity: Activity[];
   invites: (Invite & { business_id: string })[];
   google: Record<string, GoogleStatus>;
+  conversations: (Omit<Conversation, "customer_name" | "customer_phone" | "unread"> & { business_read_at: string | null; customer_read_at: string | null })[];
+  messages: Message[];
+  photos: (Omit<CustomerPhoto, "url"> & { business_id: string; src: string })[];
   seq: number;
 }
 
@@ -85,6 +93,9 @@ function seed(now = new Date()): State {
     activity: [],
     invites: [],
     google: {},
+    conversations: [],
+    messages: [],
+    photos: [],
     seq: 1,
   };
   // Deterministic pseudo-random so the sample looks the same on every reset
@@ -93,7 +104,7 @@ function seed(now = new Date()): State {
   const created = (daysAgo: number) => new Date(now.getTime() - daysAgo * 86_400_000).toISOString();
   for (let i = 0; i < 28; i++) {
     const name = `${FIRST[i % FIRST.length]} ${LAST[(i * 7) % LAST.length]}`;
-    s.customers.push({ id: `cus-${i}`, business_id: b.id, full_name: name, phone: `+97250${String(1000000 + i * 37219).slice(0, 7)}`, email: null, notes: i % 6 === 0 ? "מעדיפה שעות בוקר" : "", user_id: null, created_at: created(60 - i * 2) });
+    s.customers.push({ id: `cus-${i}`, business_id: b.id, full_name: name, phone: `+97250${String(1000000 + i * 37219).slice(0, 7)}`, email: null, notes: i % 6 === 0 ? "מעדיפה שעות בוקר" : "", user_id: null, created_at: created(60 - i * 2), tags: i % 5 === 0 ? ["VIP"] : i % 7 === 0 ? ["צבע קבוע"] : [], birthday: i % 4 === 0 ? `199${i % 10}-${String((i % 12) + 1).padStart(2, "0")}-${String((i % 27) + 1).padStart(2, "0")}` : null, preferences: i % 5 === 0 ? "גוון 7.1 · מעדיפה קפה בלי סוכר" : "" });
   }
   const today = DateTime.fromJSDate(now).setZone(TZ).startOf("day");
   const cat: Catalogue = { business: b, professionals: pros, services };
@@ -141,6 +152,16 @@ function seed(now = new Date()): State {
     { id: "wl-1", business_id: b.id, customer_id: "cus-3", customer_name: s.customers[3].full_name, customer_phone: s.customers[3].phone, service_id: "svc-color", professional_id: null, date_from: today.toISODate()!, date_to: today.plus({ days: 5 }).toISODate()!, part_of_day: "morning", note: "", status: "waiting", notified_at: null, offered_start: null, created_at: created(1) },
     { id: "wl-2", business_id: b.id, customer_id: "cus-8", customer_name: s.customers[8].full_name, customer_phone: s.customers[8].phone, service_id: "svc-cut", professional_id: "pro-maya", date_from: today.toISODate()!, date_to: today.plus({ days: 3 }).toISODate()!, part_of_day: "any", note: "גמישה בשעות", status: "waiting", notified_at: null, offered_start: null, created_at: created(0.3) },
   );
+  const convo = (ci: number, lines: [("customer" | "business"), string, number][], read: boolean) => {
+    const id = `conv-${ci}`;
+    const msgs = lines.map(([sender, body, minsAgo], k) => ({ id: s.seq++, conversation_id: id, sender, body, created_at: new Date(now.getTime() - minsAgo * 60_000).toISOString(), k }));
+    for (const m of msgs) s.messages.push({ id: m.id, conversation_id: m.conversation_id, sender: m.sender, body: m.body, created_at: m.created_at });
+    const last = msgs.at(-1)!;
+    s.conversations.push({ id, business_id: b.id, customer_id: `cus-${ci}`, appointment_id: null, last_message: last.body, last_message_at: last.created_at, last_sender: last.sender, business_read_at: read ? last.created_at : null, customer_read_at: last.created_at });
+  };
+  convo(2, [["customer", "היי! אפשר לשלוח תמונה של הצבע שאני רוצה?", 95], ["business", "בטח, שלחי כאן ונגיד לך כמה זמן זה לוקח", 90], ["customer", "שלחתי באינסטגרם, זה בלונד דבש", 12]], false);
+  convo(6, [["customer", "יש מקום מחר בבוקר לפן?", 240], ["business", "יש ב־10:15 אצל נועה, לקבוע?", 230], ["customer", "כן תודה!", 225]], true);
+  convo(9, [["business", "תזכורת: מחר ב־12:00 צבע שורשים אצל דניאל 💜", 1500]], true);
   const act = (kind: string, title: string, body: string, minsAgo: number) =>
     s.activity.unshift({ id: s.seq++, business_id: b.id, kind, title, body, customer_id: null, appointment_id: null, waitlist_id: null, created_at: new Date(now.getTime() - minsAgo * 60_000).toISOString() });
   act("customer_registered", "רישום לקוח חדש", `${s.customers[1].full_name} נרשם/ה למערכת`, 300);
@@ -202,6 +223,34 @@ export function previewBackend(): Backend & { simulate(): Promise<string>; reset
     const m = member(businessId);
     return !!m && (m.role === "owner" || m.professional_id === proId);
   };
+  const convListeners = new Map<string, Set<(m: Message) => void>>();
+  const isConvCustomer = (c: { customer_id: string }) => !!userId && state.customers.find((x) => x.id === c.customer_id)?.user_id === userId;
+  const convView = (c: State["conversations"][number]): Conversation => {
+    const cu = state.customers.find((x) => x.id === c.customer_id);
+    const { business_read_at, customer_read_at: _r, ...rest } = c;
+    void _r;
+    return { ...rest, customer_name: cu?.full_name ?? "", customer_phone: cu?.phone ?? "", unread: c.last_sender === "customer" && (!business_read_at || business_read_at < c.last_message_at) };
+  };
+  function postMessage(conversationId: string, sender: "customer" | "business", body: string) {
+    const text = body.trim();
+    if (!text) throw new BackendError("ההודעה ריקה");
+    if (text.length > 2000) throw new BackendError("ההודעה ארוכה מדי");
+    const c = state.conversations.find((x) => x.id === conversationId)!;
+    const m: Message = { id: state.seq++, conversation_id: conversationId, sender, body: text, created_at: new Date().toISOString() };
+    state.messages.push(m);
+    Object.assign(c, { last_message: text.slice(0, 140), last_message_at: m.created_at, last_sender: sender });
+    if (sender === "business") c.business_read_at = m.created_at;
+    else c.customer_read_at = m.created_at;
+    if (sender === "customer") {
+      const name = state.customers.find((x) => x.id === c.customer_id)?.full_name ?? "";
+      log(c.business_id, "message", "הודעה חדשה", `${name}: ${text.slice(0, 80)}`, { customer_id: c.customer_id });
+    }
+    emit(c.business_id, { table: "messages", row: m });
+    emit(c.business_id, { table: "conversations" });
+    for (const cb of convListeners.get(conversationId) ?? []) cb(clone(m));
+    save();
+    return m;
+  }
   const cat = (businessId: string): Catalogue => ({
     business: state.businesses.find((b) => b.id === businessId)!,
     professionals: state.professionals.filter((p) => p.business_id === businessId).sort((a, b) => a.sort - b.sort),
@@ -223,10 +272,10 @@ export function previewBackend(): Backend & { simulate(): Promise<string>; reset
     return row;
   }
 
-  function insertCustomer(businessId: string, input: { full_name: string; phone: string; email?: string | null; notes?: string; user_id?: string | null }) {
+  function insertCustomer(businessId: string, input: CustomerInput & { user_id?: string | null }) {
     if (input.full_name.trim().length < 2) throw new BackendError("נא להזין שם");
     if (input.phone && state.customers.some((c) => c.business_id === businessId && c.phone === input.phone)) throw new BackendError("כבר קיים/ת לקוח/ה עם הטלפון הזה", "duplicate");
-    const c: Customer = { id: uid(), business_id: businessId, full_name: input.full_name.trim(), phone: input.phone, email: input.email ?? null, notes: input.notes ?? "", user_id: input.user_id ?? null, created_at: new Date().toISOString() };
+    const c: Customer = { id: uid(), business_id: businessId, full_name: input.full_name.trim(), phone: input.phone, email: input.email ?? null, notes: input.notes ?? "", user_id: input.user_id ?? null, created_at: new Date().toISOString(), tags: input.tags ?? [], birthday: input.birthday ?? null, preferences: input.preferences ?? "" };
     state.customers.push(c);
     log(businessId, "customer_registered", "רישום לקוח חדש", `${c.full_name} נרשם/ה למערכת`, { customer_id: c.id });
     emit(businessId, { table: "customers" });
@@ -473,12 +522,13 @@ export function previewBackend(): Backend & { simulate(): Promise<string>; reset
       requireMember(c.business_id);
       return clone({ customer: c, appointments: state.appointments.filter((a) => a.customer_id === id).sort((x, y) => y.starts_at.localeCompare(x.starts_at)) });
     },
-    async saveCustomer(businessId: string, i: { id?: string; full_name: string; phone: string; email?: string | null; notes?: string }) {
+    async saveCustomer(businessId: string, i: CustomerInput) {
       requireMember(businessId);
       if (i.id) {
         const c = state.customers.find((x) => x.id === i.id)!;
         if (i.phone && state.customers.some((x) => x.business_id === businessId && x.phone === i.phone && x.id !== i.id)) throw new BackendError("כבר קיים/ת לקוח/ה עם הטלפון הזה", "duplicate");
-        Object.assign(c, { full_name: i.full_name, phone: i.phone, email: i.email ?? null, notes: i.notes ?? c.notes });
+        Object.assign(c, { full_name: i.full_name, phone: i.phone, email: i.email ?? null });
+        for (const k of ["notes", "tags", "birthday", "preferences"] as const) if (i[k] !== undefined) Object.assign(c, { [k]: i[k] });
         for (const a of state.appointments.filter((a) => a.customer_id === c.id)) Object.assign(a, { customer_name: c.full_name, customer_phone: c.phone });
         save();
         return clone(c);
@@ -486,6 +536,87 @@ export function previewBackend(): Backend & { simulate(): Promise<string>; reset
       const c = insertCustomer(businessId, i);
       save();
       return clone(c);
+    },
+    async customerPhotos(customerId: string) {
+      const list = state.photos.filter((p) => p.customer_id === customerId).sort((x, y) => y.created_at.localeCompare(x.created_at));
+      return Promise.all(list.map(async (p) => ({ id: p.id, customer_id: p.customer_id, kind: p.kind, caption: p.caption, created_at: p.created_at, url: await mediaStore.url(p.src) })));
+    },
+    async addCustomerPhoto(businessId: string, customerId: string, file: Blob, kind: CustomerPhoto["kind"], caption: string) {
+      requireMember(businessId);
+      if (!file.type.startsWith("image/")) throw new BackendError("בחרו קובץ תמונה");
+      if (file.size > 12 * 1024 * 1024) throw new BackendError("התמונה גדולה מדי (עד 12MB)");
+      const src = await mediaStore.put(file);
+      state.photos.push({ id: uid(), business_id: businessId, customer_id: customerId, kind, caption, created_at: new Date().toISOString(), src });
+      save();
+    },
+    async removeCustomerPhoto(photo: CustomerPhoto) {
+      const p = state.photos.find((x) => x.id === photo.id);
+      if (p) await mediaStore.remove(p.src);
+      state.photos = state.photos.filter((x) => x.id !== photo.id);
+      save();
+    },
+
+    async conversations(businessId: string) {
+      requireMember(businessId);
+      return delay(clone(state.conversations.filter((c) => c.business_id === businessId).sort((x, y) => y.last_message_at.localeCompare(x.last_message_at)).map(convView)));
+    },
+    async messages(conversationId: string) {
+      const c = state.conversations.find((x) => x.id === conversationId);
+      if (!c || !(member(c.business_id) || isConvCustomer(c))) throw new BackendError("אין גישה לשיחה הזו", "forbidden");
+      return delay(clone(state.messages.filter((m) => m.conversation_id === conversationId)));
+    },
+    async conversationWith(businessId: string, customerId: string) {
+      requireMember(businessId);
+      let c = state.conversations.find((x) => x.business_id === businessId && x.customer_id === customerId);
+      if (!c) {
+        c = { id: uid(), business_id: businessId, customer_id: customerId, appointment_id: null, last_message: "", last_message_at: new Date().toISOString(), last_sender: null, business_read_at: null, customer_read_at: null };
+        state.conversations.push(c);
+        save();
+      }
+      return c.id;
+    },
+    async sendAsBusiness(businessId: string, conversationId: string, body: string) {
+      requireMember(businessId);
+      postMessage(conversationId, "business", body);
+    },
+    async markReadByBusiness(conversationId: string) {
+      const c = state.conversations.find((x) => x.id === conversationId);
+      if (c && member(c.business_id)) {
+        c.business_read_at = new Date().toISOString();
+        emit(c.business_id, { table: "conversations" });
+        save();
+      }
+    },
+    async myConversation(businessId: string, i: { fullName: string; phone: string; appointmentId?: string | null }) {
+      const u = me();
+      if (!u) throw new BackendError("יש להתחבר כדי לשלוח הודעה", "auth");
+      let cu = state.customers.find((x) => x.business_id === businessId && (x.user_id === u.id || (!!i.phone && x.phone === i.phone)));
+      if (cu) cu.user_id = u.id;
+      else cu = insertCustomer(businessId, { full_name: i.fullName || u.name || "לקוח/ה", phone: i.phone || u.phone || "", user_id: u.id });
+      let c = state.conversations.find((x) => x.business_id === businessId && x.customer_id === cu!.id);
+      if (!c) {
+        c = { id: uid(), business_id: businessId, customer_id: cu.id, appointment_id: i.appointmentId ?? null, last_message: "", last_message_at: new Date().toISOString(), last_sender: null, business_read_at: null, customer_read_at: null };
+        state.conversations.push(c);
+      } else if (i.appointmentId) c.appointment_id = i.appointmentId;
+      save();
+      return c.id;
+    },
+    async sendAsCustomer(_businessId: string, conversationId: string, body: string) {
+      const c = state.conversations.find((x) => x.id === conversationId);
+      if (!c || !isConvCustomer(c)) throw new BackendError("אין גישה לשיחה הזו", "forbidden");
+      postMessage(conversationId, "customer", body);
+    },
+    async markReadByCustomer(conversationId: string) {
+      const c = state.conversations.find((x) => x.id === conversationId);
+      if (c && isConvCustomer(c)) {
+        c.customer_read_at = new Date().toISOString();
+        save();
+      }
+    },
+    subscribeConversation(conversationId: string, cb: (m: Message) => void) {
+      if (!convListeners.has(conversationId)) convListeners.set(conversationId, new Set());
+      convListeners.get(conversationId)!.add(cb);
+      return () => void convListeners.get(conversationId)!.delete(cb);
     },
 
     async waitlist(businessId: string) {
@@ -614,7 +745,15 @@ export function previewBackend(): Backend & { simulate(): Promise<string>; reset
     async simulate() {
       const b = state.businesses[0];
       const roll = Math.random();
-      if (roll < 0.34) {
+      if (roll < 0.2) {
+        const c = state.conversations.filter((x) => x.business_id === b.id)[Math.floor(Math.random() * 3)] ?? state.conversations[0];
+        const lines = ["אפשר להזיז את התור לשעה מאוחרת יותר?", "תודה רבה, יצא מדהים! 😍", "יש לכם מקום השבוע לבלייאז׳?", "אני מאחרת ב־10 דקות, סליחה!"];
+        if (c) {
+          postMessage(c.id, "customer", lines[Math.floor(Math.random() * lines.length)]);
+          return "הודעה חדשה מלקוח/ה";
+        }
+      }
+      if (roll < 0.45) {
         const c = insertCustomer(b.id, { full_name: `${FIRST[Math.floor(Math.random() * FIRST.length)]} ${LAST[Math.floor(Math.random() * LAST.length)]}`, phone: `+97254${Math.floor(1000000 + Math.random() * 8999999)}` });
         save();
         return `${c.full_name} נרשם/ה`;
