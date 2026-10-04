@@ -24,27 +24,41 @@ async function switchRole(page: Page, userId: string | null, path: string) {
 
 const slotGroups = (page: Page) => page.getByRole("radiogroup", { name: /^שעות/ });
 
-/** From the time step: picks the n-th slot of the selected day, continues to summary. Returns the time text. */
+/** Calendar step: closes the service note if shown, then opens the n-th bookable day. */
+async function pickDay(page: Page, n = 1) {
+  await expect(page.getByRole("heading", { name: "בחירת תאריך" })).toBeVisible();
+  const note = page.getByRole("button", { name: "סגירת ההודעה" });
+  if (await note.isVisible()) await note.click();
+  const day = page.getByRole("radiogroup", { name: "תאריך" }).locator("[role=radio]:not([disabled])").nth(n);
+  const label = await day.getAttribute("aria-label");
+  await day.click();
+  await expect(page.getByRole("heading", { name: "בחירת שעה" })).toBeVisible();
+  return label;
+}
+
+/** Calendar → time list → picks the n-th slot, which opens the confirmation sheet. Returns the time text. */
 async function pickSlotAndContinue(page: Page, n = 0) {
+  await pickDay(page);
   const slot = slotGroups(page).getByRole("radio").nth(n);
   const time = (await slot.textContent())!.trim();
   await slot.click();
-  await page.getByRole("button", { name: "המשך", exact: true }).click();
-  await page.getByRole("button", { name: "לסיכום" }).click();
+  await expect(confirmSheet(page)).toBeVisible();
   return time;
 }
 
-const confirmBooking = (page: Page) => page.getByRole("button", { name: /אישור התור|שליחת בקשה|המשך לתשלום מקדמה/ });
+const confirmSheet = (page: Page) => page.getByRole("dialog", { name: "אישור התור שבחרת" });
+const confirmBooking = (page: Page) => confirmSheet(page).getByRole("button", { name: /^(אישור|שליחת בקשה)/ });
 
 /** Books "פן ועיצוב" (auto-approved, pay at business) with נועה at Studio Nova; returns appointment id and time. */
 async function bookBlowdry(page: Page) {
   await page.goto("/#/book/b-nova?service=b-nova-s1&pro=b-nova-p2");
-  await expect(page.getByRole("heading", { name: "מתי נוח לך?" })).toBeVisible();
   // a day a few days ahead, so the customer may still change or cancel under the policy
-  await page.getByRole("radiogroup", { name: "תאריך" }).locator("[role=radio]:not([disabled])").nth(3).click();
-  const time = await pickSlotAndContinue(page);
+  await pickDay(page, 3);
+  const slot = slotGroups(page).getByRole("radio").first();
+  const time = (await slot.textContent())!.trim();
+  await slot.click();
   await confirmBooking(page).click();
-  await expect(page.getByRole("heading", { name: "התור נקבע!" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /התור הוזמן בהצלחה/ })).toBeVisible();
   await page.getByRole("link", { name: "לפרטי התור" }).click();
   await expect(page).toHaveURL(/#\/appointments\/apt/);
   await expect(page.getByRole("heading", { name: "פרטי תור" })).toBeVisible();
@@ -58,22 +72,22 @@ test("1. guest opens a reel, signs in and completes a booking without losing con
   await expect(first).toBeVisible();
   await first.getByRole("button", { name: "קביעת תור" }).click();
   await expect(page).toHaveURL(/#\/book\//);
-  // Service may be preselected from the post; otherwise choose the first one
-  if (await page.getByRole("heading", { name: "איזה טיפול?" }).isVisible()) await page.getByRole("button", { pressed: false }).filter({ hasText: "₪" }).first().click();
-  if (await page.getByRole("heading", { name: "אצל מי?" }).isVisible()) await page.getByRole("button", { name: /כל איש מקצוע זמין/ }).click();
+  // Staff first ("find me the fastest"), then the treatment unless the post preselected it
+  if (await page.getByRole("heading", { name: "בחירת איש צוות" }).isVisible()) await page.getByRole("button", { name: /תמצא לי תור מהיר/ }).click();
+  if (await page.getByRole("heading", { name: "בחירת טיפול" }).isVisible()) await page.getByRole("list", { name: "טיפולים" }).getByRole("button").first().click();
   const time = await pickSlotAndContinue(page);
-  const summary = await page.locator("dl").first().innerText();
+  const summary = await confirmSheet(page).innerText();
+  expect(summary).toContain(time);
   await confirmBooking(page).click();
   // Guest is asked to sign in; choices are kept
   await page.getByRole("link", { name: "התחברות או הרשמה" }).click();
   await expect(page.getByText("ההזמנה שלך שמורה")).toBeVisible();
   await page.getByRole("button", { name: /דנה כהן/ }).click();
   await expect(page).toHaveURL(/#\/book\//);
-  await expect(page.getByRole("heading", { name: "סיכום" })).toBeVisible();
-  expect(await page.locator("dl").first().innerText()).toBe(summary);
-  expect(summary).toContain(time);
+  await expect(confirmSheet(page)).toBeVisible();
+  expect(await confirmSheet(page).innerText()).toBe(summary);
   await confirmBooking(page).click();
-  await expect(page.getByRole("heading", { name: /התור נקבע!|הבקשה נשלחה|נשאר רק לשלם מקדמה/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /התור הוזמן בהצלחה|הבקשה נשלחה|נשאר רק לשלם מקדמה/ })).toBeVisible();
 });
 
 test("2. selected city filters both business results and reels", async ({ page }) => {
@@ -102,18 +116,15 @@ test("3. selected professional changes services and available slots", async ({ p
   expect(danielServices).not.toEqual(noaServices);
   // Root colour is only offered by Daniel
   await page.goto("/#/book/b-nova?service=b-nova-s2");
-  await expect(page.getByRole("heading", { name: "אצל מי?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "בחירת איש צוות" })).toBeVisible();
   await expect(page.getByRole("button", { name: /דניאל כהן/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /נועה לוי/ })).toHaveCount(0);
   // Balayage: Maya vs Daniel have different hours → different slots on the same day
   const slotsFor = async (pro: string) => {
     await page.goto(`/#/book/b-nova?service=b-nova-s3&pro=${pro}`);
-    await expect(page.getByRole("heading", { name: "מתי נוח לך?" })).toBeVisible();
-    const dates = page.getByRole("radiogroup", { name: "תאריך" }).getByRole("radio");
-    // pick the 4th enabled day so both have a comparable, fully future day
-    const enabled = dates.and(page.locator(":not([disabled])"));
-    await enabled.nth(3).click();
-    return { day: await enabled.nth(3).getAttribute("aria-label"), slots: await slotGroups(page).getByRole("radio").allInnerTexts() };
+    // the 4th enabled day so both have a comparable, fully future day
+    const day = await pickDay(page, 3);
+    return { day, slots: await slotGroups(page).getByRole("radio").allInnerTexts() };
   };
   const maya = await slotsFor("b-nova-p0");
   const daniel = await slotsFor("b-nova-p1");
@@ -166,8 +177,7 @@ test("6. cancellation releases the slot", async ({ page }) => {
   const { id, time } = await bookBlowdry(page);
   const openSameDay = async () => {
     await page.goto("/#/book/b-nova?service=b-nova-s1&pro=b-nova-p2");
-    await expect(page.getByRole("heading", { name: "מתי נוח לך?" })).toBeVisible();
-    await page.getByRole("radiogroup", { name: "תאריך" }).locator("[role=radio]:not([disabled])").nth(3).click();
+    await pickDay(page, 3);
   };
   // While booked, that time is not offered
   await openSameDay();
@@ -266,8 +276,7 @@ test.describe("additional states", () => {
     await start(page, CUSTOMER, "/book/b-nova?service=b-nova-s2");
     await page.getByRole("button", { name: /דניאל כהן/ }).click();
     await pickSlotAndContinue(page);
-    await expect(page.getByText("מקדמה לתשלום עכשיו (דמו)")).toBeVisible();
-    await expect(page.getByText("יתרה לתשלום בעסק")).toBeVisible();
+    await expect(confirmSheet(page).getByText(/מקדמה .* עכשיו \(דמו\), היתרה בעסק/)).toBeVisible();
     await confirmBooking(page).click();
     const sheet = page.getByRole("dialog", { name: "תשלום מקדמה" });
     await expect(sheet.getByText("לא נאספים פרטי כרטיס")).toBeVisible();
@@ -282,10 +291,10 @@ test.describe("additional states", () => {
 
   test("manual approval: request is pending until the business approves", async ({ page }) => {
     await start(page, CUSTOMER, "/book/b-chrome?service=b-chrome-s1");
-    if (await page.getByRole("heading", { name: "אצל מי?" }).isVisible()) await page.getByRole("button", { name: /כל איש מקצוע זמין/ }).click();
+    if (await page.getByRole("heading", { name: "בחירת איש צוות" }).isVisible()) await page.getByRole("button", { name: /תמצא לי תור מהיר/ }).click();
     await pickSlotAndContinue(page);
-    await page.getByRole("button", { name: "שליחת בקשה" }).click();
-    await expect(page.getByRole("heading", { name: "הבקשה נשלחה" })).toBeVisible();
+    await confirmSheet(page).getByRole("button", { name: "שליחת בקשה" }).click();
+    await expect(page.getByRole("heading", { name: /הבקשה נשלחה/ })).toBeVisible();
     await page.getByRole("link", { name: "לפרטי התור" }).click();
     await expect(page.getByText("ממתין לאישור העסק").first()).toBeVisible();
   });

@@ -1,26 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { AlertTriangle, Check, CheckCircle2, Clock, CreditCard, Hourglass, Info, Users } from "lucide-react";
+import { ArrowRight, Armchair, BellRing, CalendarClock, CalendarHeart, Check, ChevronLeft, ChevronRight, CircleX, Clock, Info, Sparkles, X, Zap } from "lucide-react";
 import clsx from "clsx";
 import { DateTime } from "luxon";
-import type { Appointment, DB, ID, Post, Service } from "../domain/types";
+import type { Appointment, DB, ID, Professional, Service } from "../domain/types";
 import { availableDays, depositFor, getSlots } from "../domain/booking";
-import { duration, price, STATUS_LABEL, WEEKDAYS_SHORT } from "../domain/format";
-import { TZ, fmtDate, fmtDateTime, fmtTime, local } from "../domain/time";
-import { proRating } from "../domain/discover";
-import { book, payDeposit } from "../store/actions";
-import { gate, useApp, useMe, useMode, type BookingDraft } from "../store/app";
+import { price, WEEKDAYS, WEEKDAYS_SHORT } from "../domain/format";
+import { TZ, fmtDate, fmtTime, local } from "../domain/time";
+import { book, openConversation, payDeposit, sendMessage } from "../store/actions";
+import { gate, toast, useApp, useMe, useMode, type BookingDraft } from "../store/app";
 import { DemoPayments } from "../integrations/payments";
-import { Avatar, Badge, Button, DemoLabel, EmptyState, LinkButton, Textarea } from "../ui/kit";
+import { Avatar, Button, DemoLabel, EmptyState, LinkButton, Textarea } from "../ui/kit";
 import { Sheet } from "../ui/overlays";
-import { useMediaUrl } from "../ui/hooks";
-import { TopBar } from "../ui/shell";
 
-const STEPS = ["שירות", "איש מקצוע", "מועד", "השראה", "סיכום"];
+/**
+ * Booking flow, step by step like a dedicated salon app:
+ * staff → treatment → month calendar → time list → confirm sheet → success → policy notice.
+ * Availability, holds, deposits and manual approval use the same domain rules as before.
+ */
+const STEP_TITLE = ["בחירת איש צוות", "בחירת טיפול", "בחירת תאריך", "בחירת שעה"];
+const MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
+const HORIZON_DAYS = 60;
 
 function setDraft(patch: Partial<BookingDraft>) {
   useApp.setState((s) => (s.bookingDraft ? { bookingDraft: { ...s.bookingDraft, ...patch } } : {}));
 }
+
+const dayLabel = (iso: string) => {
+  const d = local(iso);
+  return `${WEEKDAYS[d.weekday % 7]}, ${d.day}/${d.month}`;
+};
 
 export function BookingScreen() {
   const { businessId } = useParams();
@@ -30,8 +39,9 @@ export function BookingScreen() {
   const me = useMe();
   const mode = useMode();
   const draft = useApp((s) => s.bookingDraft);
-  const [done, setDone] = useState<ID | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [doneId, setDoneId] = useState<ID | null>(null);
+  const [policyFor, setPolicyFor] = useState<ID | null>(null);
   const [conflict, setConflict] = useState(false);
   const b = db.businesses.find((x) => x.id === businessId);
 
@@ -53,70 +63,77 @@ export function BookingScreen() {
         note: "",
         inspirationPostIds: post ? [post] : [],
         sourcePostId: post,
-        step: svc ? (proOk ? 2 : 1) : 0,
+        // staff first; a known service skips the treatment step, a known pro + service goes straight to the calendar
+        step: proOk ? (svc ? 2 : 1) : 0,
       },
     });
     if (post || service || pro) navigate(`/book/${b.id}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [b?.id, sp.toString()]);
 
+  // Returning from sign-in with a chosen time: reopen the confirmation
+  useEffect(() => {
+    if (draft?.start && (draft.step ?? 0) === 3 && me) setConfirmOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me?.id]);
+
   if (!b || b.status !== "active")
     return (
       <>
-        <TopBar title="קביעת תור" back />
+        <BookingHeader title="קביעת תור" onClose={() => navigate(-1)} />
         <div className="p-4">
           <EmptyState title="העסק לא זמין להזמנות" action={<LinkButton to="/discover">לגילוי עסקים</LinkButton>} />
         </div>
       </>
     );
 
-  if (done) return <BookingDone appointmentId={done} />;
-  if (!draft || draft.businessId !== b.id) return null;
+  const doneAppt = doneId ? db.appointments.find((a) => a.id === doneId) : undefined;
+  if (!draft || draft.businessId !== b.id) {
+    // After booking the draft is cleared; keep the result sheets on screen
+    return doneAppt ? <ResultLayer appointment={doneAppt} policyFor={policyFor} setPolicyFor={setPolicyFor} /> : null;
+  }
 
   const step = draft.step ?? 0;
   const service = db.services.find((s) => s.id === draft.serviceId);
-  const pro = draft.professionalId ? db.professionals.find((p) => p.id === draft.professionalId) : null;
+  const pro = (draft.professionalId && db.professionals.find((p) => p.id === draft.professionalId)) || null;
   const goto = (n: number) => {
     setDraft({ step: n });
     window.scrollTo({ top: 0 });
   };
+  const back = () => {
+    if (step === 0) return navigate(-1);
+    // skip the treatment step when it was preselected from a post and the staff step comes before it
+    goto(step - 1);
+  };
+  const close = () => {
+    useApp.setState({ bookingDraft: null });
+    navigate(`/b/${b.id}`);
+  };
 
   const confirm = () => {
     if (!service || !draft.start) return;
+    if (!useApp.getState().userId) setConfirmOpen(false); // the sign-in sheet takes over; reopened on return
     if (!gate("כדי לשריין את המועד צריך חשבון. הבחירות שלך נשמרות.", `/book/${b.id}`)) return;
     if (mode !== "customer" || me?.role !== "customer") return;
-    setSubmitting(true);
     const a = book({ businessId: b.id, serviceId: service.id, professionalId: draft.professionalId ?? null, start: draft.start, note: draft.note, inspirationPostIds: draft.inspirationPostIds, sourcePostId: draft.sourcePostId });
-    setSubmitting(false);
+    setConfirmOpen(false);
     if (a) {
+      setDoneId(a.id);
       useApp.setState({ bookingDraft: null });
-      setDone(a.id);
     } else {
-      // Most likely the slot was taken meanwhile — send the customer back to time selection
+      // Most likely the slot was taken meanwhile — back to the time list, everything else kept
       setConflict(true);
-      setDraft({ start: undefined, step: 2 });
+      setDraft({ start: undefined, step: 3 });
     }
   };
 
-  return (
-    <>
-      <TopBar title={`תור ב${b.name}`} sub={STEPS[step]} back={step > 0 ? undefined : true} actions={step > 0 ? <Button variant="ghost" size="sm" onClick={() => goto(step - 1)}>הקודם</Button> : undefined} />
-      <div className="mx-auto max-w-2xl px-4 pb-40 pt-3 lg:px-6">
-        <ol className="mb-5 flex gap-1.5" aria-label="שלבי ההזמנה">
-          {STEPS.map((s, i) => (
-            <li key={s} className="flex-1">
-              <button
-                type="button"
-                disabled={i > step}
-                onClick={() => goto(i)}
-                aria-current={i === step ? "step" : undefined}
-                aria-label={`${i + 1}. ${s}`}
-                className={clsx("h-1.5 w-full rounded-full transition", i <= step ? "bg-ink" : "bg-surface-2")}
-              />
-            </li>
-          ))}
-        </ol>
+  const who = pro?.name ?? "איש הצוות הפנוי הראשון";
+  const subtitle = step === 1 ? `בחרת את ${who}${service ? "" : " ל"}` : service ? `בחרת את ${who} ל${service.name}` : "";
 
+  return (
+    <div className="min-h-[100dvh] bg-bg pb-40">
+      <BookingHeader title={STEP_TITLE[step]} onBack={step > 0 ? back : undefined} onClose={close} />
+      <div className="mx-auto max-w-md px-5 pt-5">
         {me && me.role !== "customer" && (
           <div className="mb-4 flex gap-2 rounded-2xl bg-warn-soft p-3 text-sm text-warn">
             <Info className="size-5 shrink-0" aria-hidden />
@@ -125,133 +142,473 @@ export function BookingScreen() {
             </span>
           </div>
         )}
-        {conflict && step === 2 && (
-          <div role="alert" className="mb-4 flex gap-2 rounded-2xl bg-bad-soft p-3 text-sm text-bad">
-            <AlertTriangle className="size-5 shrink-0" aria-hidden /> המועד שבחרת נתפס בינתיים. בחרו שעה אחרת — שאר הפרטים נשמרו.
+        {step > 0 && subtitle && (
+          <p className="mb-5 text-center text-lg font-semibold leading-snug">
+            {subtitle}
+            {step === 3 && draft.date && (
+              <>
+                <br />
+                ביום {WEEKDAYS[DateTime.fromISO(draft.date, { zone: TZ }).weekday % 7]}, {DateTime.fromISO(draft.date, { zone: TZ }).toFormat("d.M")}
+              </>
+            )}
+          </p>
+        )}
+        {conflict && step === 3 && (
+          <div role="alert" className="mb-4 rounded-2xl bg-bad-soft p-3 text-center text-sm text-bad">
+            המועד שבחרת נתפס בינתיים. בחרו שעה אחרת — שאר הפרטים נשמרו.
           </div>
         )}
 
-        {step === 0 && <ServiceStep db={db} businessId={b.id} selected={draft.serviceId} onPick={(id) => (setDraft({ serviceId: id, start: undefined, professionalId: pro && pro.serviceIds.includes(id) ? pro.id : undefined }), goto(1))} />}
-        {step === 1 && service && <ProStep db={db} service={service} selected={draft.professionalId} onPick={(id) => (setDraft({ professionalId: id, start: undefined }), goto(2))} />}
-        {step === 2 && service && (
-          <SlotPicker
+        {step === 0 && (
+          <StaffStep
             db={db}
             businessId={b.id}
-            serviceId={service.id}
-            professionalId={draft.professionalId ?? null}
-            date={draft.date}
-            selected={draft.start}
-            onDate={(date) => setDraft({ date, start: undefined })}
-            onPick={(start) => {
-              setConflict(false);
-              setDraft({ start });
+            serviceId={draft.serviceId}
+            onPick={(id) => {
+              setDraft({ professionalId: id, start: undefined, date: undefined });
+              const keep = draft.serviceId && (id === null || db.professionals.find((p) => p.id === id)?.serviceIds.includes(draft.serviceId));
+              if (!keep) setDraft({ serviceId: undefined });
+              goto(keep ? 2 : 1);
             }}
           />
         )}
-        {step === 3 && <InspirationStep db={db} businessId={b.id} draft={draft} />}
-        {step === 4 && service && draft.start && <ReviewStep db={db} draft={draft} service={service} />}
+        {step === 1 && (
+          <TreatmentStep
+            db={db}
+            businessId={b.id}
+            pro={pro}
+            onPick={(id) => {
+              setDraft({ serviceId: id, start: undefined, date: undefined });
+              goto(2);
+            }}
+          />
+        )}
+        {step === 2 && service && (
+          <CalendarStep
+            db={db}
+            service={service}
+            professionalId={draft.professionalId ?? null}
+            selected={draft.date}
+            onPick={(date) => {
+              setDraft({ date, start: undefined });
+              goto(3);
+            }}
+            onWaitlist={() => waitlist(b.id, service, pro, draft.date)}
+          />
+        )}
+        {step === 3 && service && draft.date && (
+          <TimeStep
+            db={db}
+            service={service}
+            professionalId={draft.professionalId ?? null}
+            date={draft.date}
+            selected={draft.start}
+            onPick={(start) => {
+              setConflict(false);
+              setDraft({ start });
+              setConfirmOpen(true);
+            }}
+            onWaitlist={() => waitlist(b.id, service, pro, draft.date)}
+          />
+        )}
       </div>
 
-      <div className="fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-40 px-3 lg:bottom-4 lg:ps-72">
-        <div className="glass mx-auto flex max-w-2xl items-center gap-3 rounded-[24px] p-3">
-          <div className="min-w-0 flex-1 text-sm">
-            {service ? (
-              <>
-                <div className="truncate font-semibold">{service.name}</div>
-                <div className="truncate text-muted">
-                  {price(service.price, service.priceFrom)}
-                  {draft.start ? ` · ${fmtDateTime(draft.start)}` : ""}
-                </div>
-              </>
-            ) : (
-              <span className="text-muted">בחרו שירות כדי להתחיל</span>
-            )}
+      {service && draft.start && (
+        <ConfirmSheet
+          open={confirmOpen}
+          draft={draft}
+          service={service}
+          pro={pro}
+          disabled={!!me && me.role !== "customer"}
+          onCancel={() => {
+            setConfirmOpen(false);
+            setDraft({ start: undefined });
+          }}
+          onConfirm={confirm}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Black bar: back arrow at the start, title centered, close at the end (as in RTL apps). */
+function BookingHeader({ title, onBack, onClose }: { title: string; onBack?: () => void; onClose: () => void }) {
+  return (
+    <header className="sticky top-0 z-30 bg-[#111] pt-[env(safe-area-inset-top)] text-white">
+      <div className="mx-auto grid h-14 max-w-md grid-cols-[48px_1fr_48px] items-center px-2">
+        <span>
+          {onBack && (
+            <button type="button" onClick={onBack} className="grid size-11 place-items-center rounded-full hover:bg-white/10" aria-label="חזרה לשלב הקודם">
+              <ArrowRight className="size-5" />
+            </button>
+          )}
+        </span>
+        <h1 className="text-center text-[17px] font-bold">{title}</h1>
+        <button type="button" onClick={onClose} className="grid size-11 place-items-center rounded-full hover:bg-white/10" aria-label="סגירת קביעת התור">
+          <X className="size-5" />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+/* ---------------- Step 1: staff ---------------- */
+
+function StaffStep({ db, businessId, serviceId, onPick }: { db: DB; businessId: ID; serviceId?: ID; onPick: (id: ID | null) => void }) {
+  const b = db.businesses.find((x) => x.id === businessId)!;
+  const pros = db.professionals.filter((p) => p.businessId === businessId && p.active && (!serviceId || p.serviceIds.includes(serviceId)));
+  return (
+    <ul className="mt-6 flex flex-col gap-5" aria-label="אנשי צוות">
+      <li>
+        <PillRow onClick={() => onPick(null)} avatar={<Avatar src={b.avatar} name={b.name} size={64} />}>
+          <span className="inline-flex items-center gap-1.5">
+            תמצא לי תור מהיר <Zap className="size-4 fill-current" aria-hidden />
+          </span>
+        </PillRow>
+      </li>
+      {pros.map((p) => (
+        <li key={p.id}>
+          <PillRow onClick={() => onPick(p.id)} avatar={<Avatar src={p.avatar} name={p.name} size={64} />}>
+            {p.name}
+          </PillRow>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PillRow({ onClick, avatar, children }: { onClick: () => void; avatar: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <button type="button" onClick={onClick} className="group relative flex h-16 w-full items-center ps-12 transition active:scale-[0.98]">
+      <span className="absolute start-0 z-10 rounded-full bg-bg p-[3px] shadow-[0_2px_10px_rgb(0_0_0/0.18)]">{avatar}</span>
+      <span className="flex h-14 flex-1 items-center justify-center rounded-full bg-bg ps-6 text-[15px] shadow-[0_3px_12px_rgb(0_0_0/0.12)] group-hover:bg-surface">{children}</span>
+    </button>
+  );
+}
+
+/* ---------------- Step 2: treatment ---------------- */
+
+function TreatmentStep({ db, businessId, pro, onPick }: { db: DB; businessId: ID; pro: Professional | null; onPick: (id: ID) => void }) {
+  const services = db.services.filter((s) => s.businessId === businessId && s.active && (!pro || pro.serviceIds.includes(s.id)));
+  return (
+    <ul className="mt-6 flex flex-col gap-4" aria-label="טיפולים">
+      {services.map((s) => {
+        const dep = depositFor(s);
+        return (
+          <li key={s.id}>
+            <button type="button" onClick={() => onPick(s.id)} className="flex h-[68px] w-full items-stretch overflow-hidden rounded-[22px] bg-bg text-start shadow-[0_3px_12px_rgb(0_0_0/0.12)] transition hover:bg-surface active:scale-[0.98]">
+              <span className="flex min-w-0 flex-1 flex-col justify-center px-5">
+                <span className="truncate text-[15px] font-semibold">{s.name}</span>
+                <span className="mt-0.5 flex items-center gap-1 text-xs text-muted">
+                  <CalendarClock className="size-3.5" aria-hidden /> זמן טיפול: {s.durationMin} דק׳
+                  {s.approval === "manual" && " · באישור העסק"}
+                  {dep > 0 && ` · מקדמה ${price(dep)}`}
+                </span>
+              </span>
+              <span className="num flex w-[92px] shrink-0 items-center justify-center bg-[#3a3a3c] ps-3 text-[15px] font-semibold text-white [clip-path:polygon(0_0,100%_0,100%_100%,0_100%,0_0)] rtl:[clip-path:polygon(0_0,100%_0,82%_100%,0_100%)]">
+                {price(s.price, s.priceFrom)}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/* ---------------- Step 3: month calendar ---------------- */
+
+function CalendarStep({ db, service, professionalId, selected, onPick, onWaitlist }: { db: DB; service: Service; professionalId: ID | null; selected?: string; onPick: (date: string) => void; onWaitlist: () => void }) {
+  const [now] = useState(() => new Date());
+  const today = DateTime.fromJSDate(now).setZone(TZ).startOf("day");
+  const [month, setMonth] = useState(() => (selected ? DateTime.fromISO(selected, { zone: TZ }) : today).startOf("month"));
+  const [note, setNote] = useState(!!service.description);
+  const horizonEnd = today.plus({ days: HORIZON_DAYS - 1 });
+  const counts = useMemo(() => new Map(availableDays(db, { businessId: service.businessId, serviceId: service.id, professionalId }, HORIZON_DAYS, now).map((d) => [d.date, d.count])), [db, service, professionalId, now]);
+  const working = useMemo(() => {
+    const pros = db.professionals.filter((p) => p.businessId === service.businessId && p.active && p.serviceIds.includes(service.id) && (!professionalId || p.id === professionalId));
+    return new Set(pros.flatMap((p) => p.workingHours.map((h) => h.weekday)));
+  }, [db, service, professionalId]);
+  const firstOpen = [...counts].find(([, n]) => n > 0)?.[0];
+
+  const lead = month.weekday % 7; // Sunday-first grid
+  const cells = Array.from({ length: Math.ceil((lead + month.daysInMonth!) / 7) * 7 }, (_, i) => (i < lead || i >= lead + month.daysInMonth! ? null : month.plus({ days: i - lead })));
+  const canPrev = month > today.startOf("month");
+  const canNext = month.plus({ months: 1 }) <= horizonEnd.startOf("month");
+
+  return (
+    <section>
+      <div className="overflow-hidden rounded-2xl bg-bg shadow-[0_4px_18px_rgb(0_0_0/0.14)]">
+        <div className="bg-[#111] text-white">
+          <div className="flex items-center justify-between px-3 py-3">
+            <button type="button" disabled={!canPrev} onClick={() => setMonth(month.minus({ months: 1 }))} className="grid size-10 place-items-center rounded-full disabled:opacity-30" aria-label="החודש הקודם">
+              <ChevronRight className="size-5" />
+            </button>
+            <h2 className="text-[17px]" aria-live="polite">
+              {MONTHS[month.month - 1]} {month.year}
+            </h2>
+            <button type="button" disabled={!canNext} onClick={() => setMonth(month.plus({ months: 1 }))} className="grid size-10 place-items-center rounded-full disabled:opacity-30" aria-label="החודש הבא">
+              <ChevronLeft className="size-5" />
+            </button>
           </div>
-          {step === 2 && (
-            <Button disabled={!draft.start} onClick={() => goto(3)}>
-              המשך
-            </Button>
-          )}
-          {step === 3 && <Button onClick={() => goto(4)}>לסיכום</Button>}
-          {step === 4 && (
-            <Button size="lg" loading={submitting} disabled={!draft.start || (!!me && me.role !== "customer")} onClick={confirm}>
-              {service?.approval === "manual" ? "שליחת בקשה" : service?.payment === "deposit" ? "המשך לתשלום מקדמה" : "אישור התור"}
-            </Button>
-          )}
+          <div className="grid grid-cols-7 pb-2 text-center text-[13px]" aria-hidden>
+            {WEEKDAYS.map((w) => (
+              <span key={w}>{w}</span>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-7" role="radiogroup" aria-label="תאריך">
+          {cells.map((d, i) => {
+            if (!d) return <span key={i} className="h-12 border-b border-e border-line/70" aria-hidden />;
+            const iso = d.toISODate()!;
+            const inRange = d >= today && d <= horizonEnd;
+            const n = counts.get(iso) ?? 0;
+            const open = inRange && n > 0;
+            const full = inRange && n === 0 && working.has(d.weekday % 7);
+            const on = selected === iso;
+            return (
+              <button
+                key={iso}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                disabled={!open}
+                onClick={() => onPick(iso)}
+                aria-label={`${WEEKDAYS[d.weekday % 7]} ${d.day} ב${MONTHS[d.month - 1]}${open ? `, ${n} מועדים` : full ? ", אין תורים" : ""}`}
+                className={clsx("num grid h-12 place-items-center border-b border-e border-line/70 text-[13px] transition", open ? "font-bold text-ink hover:bg-surface" : full ? "text-bad" : "text-muted/50")}
+              >
+                <span className={clsx("grid size-8 place-items-center rounded-full", on && "bg-ink text-ink-inverse")}>{d.day}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
-    </>
-  );
-}
-
-function ServiceStep({ db, businessId, selected, onPick }: { db: DB; businessId: ID; selected?: ID; onPick: (id: ID) => void }) {
-  const services = db.services.filter((s) => s.businessId === businessId && s.active);
-  return (
-    <section>
-      <h2 className="mb-3 text-xl font-black">איזה טיפול?</h2>
-      <ul className="flex flex-col gap-2">
-        {services.map((s) => {
-          const dep = depositFor(s);
-          return (
-            <li key={s.id}>
-              <button type="button" onClick={() => onPick(s.id)} aria-pressed={selected === s.id} className={clsx("flex w-full items-start gap-3 rounded-2xl border p-4 text-start transition hover:bg-surface", selected === s.id ? "border-ink ring-1 ring-ink" : "border-line")}>
-                <div className="min-w-0 flex-1">
-                  <div className="font-bold">{s.name}</div>
-                  {s.description && <p className="text-sm text-muted">{s.description}</p>}
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <Badge>
-                      <Clock className="size-3" aria-hidden /> {duration(s.durationMin)}
-                    </Badge>
-                    {s.approval === "manual" && <Badge tone="warn">באישור העסק</Badge>}
-                    {dep > 0 && <Badge tone="info">מקדמה {price(dep)}</Badge>}
-                  </div>
-                </div>
-                <span className="num shrink-0 font-bold">{price(s.price, s.priceFrom)}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-function ProStep({ db, service, selected, onPick }: { db: DB; service: Service; selected?: ID | null; onPick: (id: ID | null) => void }) {
-  const pros = db.professionals.filter((p) => p.businessId === service.businessId && p.active && p.serviceIds.includes(service.id));
-  return (
-    <section>
-      <h2 className="mb-3 text-xl font-black">אצל מי?</h2>
-      <ul className="flex flex-col gap-2">
-        <li>
-          <button type="button" onClick={() => onPick(null)} aria-pressed={selected === null} className={clsx("flex w-full items-center gap-3 rounded-2xl border p-4 text-start hover:bg-surface", selected === null ? "border-ink ring-1 ring-ink" : "border-line")}>
-            <span className="grid size-12 place-items-center rounded-full bg-surface">
-              <Users className="size-5" aria-hidden />
-            </span>
-            <span className="flex-1">
-              <span className="block font-bold">כל איש מקצוע זמין</span>
-              <span className="block text-sm text-muted">הכי הרבה מועדים פנויים</span>
-            </span>
-          </button>
+      <ul className="mt-5 flex flex-col items-center gap-1.5 text-xs">
+        <li className="flex items-center gap-1.5">
+          <span className="h-0.5 w-3 bg-ink" aria-hidden /> יש תורים
         </li>
-        {pros.map((p) => {
-          const r = proRating(db, p.id);
-          return (
-            <li key={p.id}>
-              <button type="button" onClick={() => onPick(p.id)} aria-pressed={selected === p.id} className={clsx("flex w-full items-center gap-3 rounded-2xl border p-4 text-start hover:bg-surface", selected === p.id ? "border-ink ring-1 ring-ink" : "border-line")}>
-                <Avatar src={p.avatar} name={p.name} size={48} />
-                <span className="flex-1">
-                  <span className="block font-bold">{p.name}</span>
-                  <span className="block text-sm text-muted">
-                    {p.title}
-                    {r.count > 0 && <span className="num"> · ★ {r.avg.toFixed(1)}</span>}
-                  </span>
-                </span>
+        <li className="flex items-center gap-1.5">
+          <span className="h-0.5 w-3 bg-bad" aria-hidden /> אין תורים
+        </li>
+      </ul>
+      <div className="mt-5 grid grid-cols-2 gap-3 border-t border-line pt-4 text-center">
+        <div>
+          <p className="mb-2 text-xs font-semibold">חייב תור דחוף?</p>
+          <button type="button" disabled={!firstOpen} onClick={() => firstOpen && onPick(firstOpen)} className="h-11 w-full rounded-full bg-[#3a3a3c] text-xs font-semibold text-white disabled:opacity-40">
+            התורים הקרובים ביותר
+          </button>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold">לא מצאת תור לזמן שלך?</p>
+          <button type="button" onClick={onWaitlist} className="h-11 w-full rounded-full bg-ink text-xs font-semibold text-ink-inverse">
+            כניסה לרשימת המתנה
+          </button>
+        </div>
+      </div>
+      {note && service.description && (
+        <div className="fixed inset-x-0 bottom-0 z-50 mx-auto max-w-md rounded-t-[28px] bg-bg p-5 pb-[calc(6.5rem+env(safe-area-inset-bottom))] shadow-[0_-8px_30px_rgb(0_0_0/0.25)] lg:pb-6" role="dialog" aria-label="לתשומת ליבך">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-lg font-semibold">לתשומת ליבך:</h3>
+            <button type="button" onClick={() => setNote(false)} className="grid size-9 place-items-center" aria-label="סגירת ההודעה">
+              <CircleX className="size-6" />
+            </button>
+          </div>
+          <p className="text-center text-sm leading-relaxed text-muted">{service.description}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- Step 4: time list ---------------- */
+
+function TimeStep({ db, service, professionalId, date, selected, onPick, onWaitlist }: { db: DB; service: Service; professionalId: ID | null; date: string; selected?: string; onPick: (start: string) => void; onWaitlist: () => void }) {
+  const [now] = useState(() => new Date());
+  const slots = useMemo(() => getSlots(db, { businessId: service.businessId, serviceId: service.id, date, professionalId }, now), [db, service, date, professionalId, now]);
+  return (
+    <section className="flex flex-col items-center">
+      {slots.length === 0 ? (
+        <p className="rounded-2xl bg-surface p-4 text-center text-sm text-muted">אין מועדים פנויים ביום הזה. חזרו ללוח ובחרו יום אחר.</p>
+      ) : (
+        <ul className="flex w-full max-w-[240px] flex-col gap-3" role="radiogroup" aria-label={`שעות ${fmtDate(DateTime.fromISO(date, { zone: TZ }).toISO()!)}`}>
+          {slots.map((s) => (
+            <li key={s.start}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={selected === s.start}
+                onClick={() => onPick(s.start)}
+                className={clsx("num h-[50px] w-full rounded-full text-[15px] shadow-[0_3px_12px_rgb(0_0_0/0.12)] transition active:scale-[0.98]", selected === s.start ? "bg-ink text-ink-inverse" : "bg-bg hover:bg-surface")}
+              >
+                {fmtTime(s.start)}
               </button>
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ul>
+      )}
+      <p className="mt-6 text-xs font-semibold">לא מצאת תור לזמן שלך?</p>
+      <button type="button" onClick={onWaitlist} className="mt-1.5 h-11 w-full max-w-[240px] rounded-full bg-ink text-xs font-semibold text-ink-inverse">
+        כניסה לרשימת המתנה
+      </button>
     </section>
+  );
+}
+
+/** Waitlist request goes to the business inbox (no separate waitlist store in the local demo). */
+function waitlist(businessId: ID, service: Service, pro: Professional | null, date?: string) {
+  if (!gate("כדי להיכנס לרשימת ההמתנה צריך חשבון.")) return;
+  const cid = openConversation(businessId);
+  if (!cid) return;
+  const when = date ? ` ליום ${fmtDate(DateTime.fromISO(date, { zone: TZ }).toISO()!)}` : "";
+  if (sendMessage(cid, `📋 בקשה לרשימת המתנה: ${service.name}${pro ? ` אצל ${pro.name}` : ""}${when}. אשמח שתעדכנו אם מתפנה תור.`)) toast("ok", "נכנסת לרשימת ההמתנה. העסק קיבל את הבקשה בהודעות.");
+}
+
+/* ---------------- Confirm / success / policy ---------------- */
+
+function SummaryIcons({ start, serviceName, proName }: { start: string; serviceName: string; proName: string }) {
+  const items = [
+    [CalendarHeart, dayLabel(start)],
+    [BellRing, `בשעה ${fmtTime(start)}`],
+    [Armchair, serviceName],
+    [Sparkles, `אצל ${proName}`],
+  ] as const;
+  return (
+    <ul className="grid grid-cols-4 gap-1 py-4 text-center">
+      {items.map(([Icon, label]) => (
+        <li key={label} className="flex flex-col items-center gap-2 px-1">
+          <Icon className="size-9 stroke-[1.25] text-muted" aria-hidden />
+          <span className="text-xs leading-tight">{label}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function BottomLayer({ label, children, onDismiss }: { label: string; children: React.ReactNode; onDismiss?: () => void }) {
+  useEffect(() => {
+    if (!onDismiss) return;
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onDismiss();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onDismiss]);
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/55" role="dialog" aria-modal="true" aria-label={label} onClick={(e) => e.target === e.currentTarget && onDismiss?.()}>
+      <div className="animate-rise w-full max-w-md overflow-hidden rounded-t-[28px] bg-bg pb-[env(safe-area-inset-bottom)]">{children}</div>
+    </div>
+  );
+}
+
+function ConfirmSheet({ open, draft, service, pro, disabled, onCancel, onConfirm }: { open: boolean; draft: BookingDraft; service: Service; pro: Professional | null; disabled: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const [noteOpen, setNoteOpen] = useState(!!draft.note);
+  if (!open || !draft.start) return null;
+  const dep = depositFor(service);
+  return (
+    <BottomLayer label="אישור התור שבחרת" onDismiss={onCancel}>
+      <h2 className="bg-[#111] py-4 text-center text-[17px] font-semibold text-white">אישור התור שבחרת</h2>
+      <div className="px-5">
+        <SummaryIcons start={draft.start} serviceName={service.name} proName={pro?.name ?? "הפנוי/ה הראשון/ה"} />
+        <div className="flex flex-col gap-2 border-t border-line pt-3 text-center text-xs text-muted">
+          <p>
+            {price(service.price, service.priceFrom)}
+            {dep > 0 ? ` · מקדמה ${price(dep)} עכשיו (דמו), היתרה בעסק` : " · תשלום בעסק"}
+            {service.approval === "manual" && " · נשלח לאישור העסק"}
+          </p>
+          {draft.sourcePostId && <p>ההשראה מהפוסט שראית מצורפת לתור</p>}
+          {noteOpen ? (
+            <Textarea aria-label="הערה לעסק" maxLength={300} placeholder="הערה לעסק (לא חובה)" value={draft.note} onChange={(e) => setDraft({ note: e.target.value })} className="text-start text-sm text-ink" />
+          ) : (
+            <button type="button" onClick={() => setNoteOpen(true)} className="self-center font-semibold text-ink underline underline-offset-4">
+              הוספת הערה לעסק
+            </button>
+          )}
+        </div>
+        <div className="flex justify-center gap-3 py-5">
+          <button type="button" onClick={onConfirm} disabled={disabled} className="h-12 min-w-[96px] rounded-full bg-ink px-6 text-sm font-semibold text-ink-inverse disabled:opacity-40">
+            {service.approval === "manual" ? "שליחת בקשה" : dep > 0 ? "אישור ותשלום מקדמה" : "אישור"}
+          </button>
+          <button type="button" onClick={onCancel} className="h-12 min-w-[96px] rounded-full bg-[#a1a1aa] px-6 text-sm font-semibold text-white">
+            ביטול
+          </button>
+        </div>
+      </div>
+    </BottomLayer>
+  );
+}
+
+/** .ics reminder, generated locally (no calendar account involved). */
+function downloadIcs(a: Appointment, businessName: string, address: string) {
+  const f = (iso: string) => iso.replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Beautigo//Demo//HE", "BEGIN:VEVENT", `UID:${a.id}@beautigo.demo`, `DTSTAMP:${f(new Date().toISOString())}`, `DTSTART:${f(a.start)}`, `DTEND:${f(a.end)}`, `SUMMARY:${a.snapshot.serviceName} · ${businessName}`, `LOCATION:${address}`, "BEGIN:VALARM", "TRIGGER:-PT2H", "ACTION:DISPLAY", "DESCRIPTION:תזכורת לתור", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+  const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+  const el = document.createElement("a");
+  el.href = url;
+  el.download = "beautigo-appointment.ics";
+  el.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function ResultLayer({ appointment: a, policyFor, setPolicyFor }: { appointment: Appointment; policyFor: ID | null; setPolicyFor: (id: ID | null) => void }) {
+  const db = useApp((s) => s.db);
+  const me = useMe();
+  const navigate = useNavigate();
+  const [pay, setPay] = useState(a.status === "pending_payment");
+  const b = db.businesses.find((x) => x.id === a.businessId)!;
+  const pro = db.professionals.find((x) => x.id === a.professionalId);
+  const first = me?.name.split(" ")[0] ?? "";
+  const title = a.status === "confirmed" ? `${first}, התור הוזמן בהצלחה` : a.status === "pending_approval" ? `${first}, הבקשה נשלחה לעסק` : a.status === "pending_payment" ? `${first}, נשאר רק לשלם מקדמה` : `${first}, התור עודכן`;
+  const finish = () => setPolicyFor(a.id);
+
+  return (
+    <div className="min-h-[100dvh] bg-[#2b2b2e]">
+      {policyFor === a.id ? (
+        <BottomLayer label="שימו לב למדיניות" onDismiss={() => navigate(`/appointments/${a.id}`)}>
+          <div className="bg-[#111] px-6 pb-6 pt-7 text-white">
+            <h2 className="text-lg font-semibold">{first ? `${first} היקר/ה,` : "לקוח/ה יקר/ה,"}</h2>
+            <p className="mt-5 text-sm font-semibold">שימו לב לגבי איחורים, ביטולים והברזות</p>
+            <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-white/85">{a.snapshot.policyText}</p>
+            <p className="mt-3 text-sm leading-relaxed text-white/85">ביטול ללא חיוב עד {a.snapshot.cancelHours} שעות לפני התור.</p>
+            <button type="button" onClick={() => navigate(`/appointments/${a.id}`)} className="mx-auto mt-6 block h-11 w-48 rounded-full bg-white text-sm font-semibold text-[#111]">
+              סגור
+            </button>
+          </div>
+        </BottomLayer>
+      ) : (
+        <BottomLayer label="התור הוזמן">
+          <div className="flex flex-col items-center px-5 pt-7 text-center">
+            <span className={clsx("grid size-[72px] place-items-center rounded-full text-white", a.status === "confirmed" ? "bg-[#4caf50]" : "bg-[#3a3a3c]")}>
+              {a.status === "confirmed" ? <Check className="size-10 stroke-[3]" aria-hidden /> : <Clock className="size-9" aria-hidden />}
+            </span>
+            <h2 className="animate-pop mt-4 text-xl font-bold">{title}</h2>
+            <p className="mt-1 text-sm text-muted">
+              {a.status === "pending_approval" ? `נעדכן אותך באפליקציה ברגע שהעסק יאשר. הבקשה בתוקף עד ${fmtTime(a.holdExpiresAt!)}.` : a.status === "pending_payment" ? "המועד שמור לזמן קצר עד תשלום המקדמה." : "נא לא לאחר ולהגיע בזמן."}
+            </p>
+          </div>
+          <div className="mx-5 mt-4 border-y border-line">
+            <SummaryIcons start={a.start} serviceName={a.snapshot.serviceName} proName={pro?.name ?? ""} />
+          </div>
+          <div className="flex flex-col items-center gap-3 px-5 py-5">
+            {a.status === "pending_payment" ? (
+              <button type="button" onClick={() => setPay(true)} className="h-12 w-56 rounded-full bg-ink text-sm font-semibold text-ink-inverse">
+                תשלום מקדמה {price(a.snapshot.deposit)} (דמו)
+              </button>
+            ) : (
+              <button type="button" onClick={() => downloadIcs(a, b.name, a.snapshot.address)} className="h-11 w-56 rounded-full bg-[#3a3a3c] text-sm font-semibold text-white">
+                הוספת תזכורת ליומן
+              </button>
+            )}
+            <div className="w-full border-t border-line" />
+            <button type="button" onClick={finish} className="h-12 w-56 rounded-full bg-ink text-sm font-semibold text-ink-inverse">
+              סיום
+            </button>
+            <Link to={`/appointments/${a.id}`} className="text-xs font-semibold underline underline-offset-4">
+              לפרטי התור
+            </Link>
+            <p className="text-[11px] text-muted">ההתראות בדמו מוצגות באפליקציה בלבד — לא נשלחים SMS, אימייל או פוש.</p>
+          </div>
+        </BottomLayer>
+      )}
+      <DemoPaymentSheet open={pay} onClose={() => setPay(false)} appointment={a} />
+    </div>
   );
 }
 
@@ -352,159 +709,6 @@ export function SlotPicker({
         </div>
       )}
     </section>
-  );
-}
-
-function InspirationStep({ db, businessId, draft }: { db: DB; businessId: ID; draft: BookingDraft }) {
-  const me = useMe();
-  const savedIds = new Set(db.collections.filter((c) => c.userId === me?.id).flatMap((c) => c.postIds));
-  const candidates = useMemo(() => {
-    const own = db.posts.filter((p) => p.businessId === businessId && p.status === "published");
-    const saved = db.posts.filter((p) => savedIds.has(p.id) && p.status === "published" && p.businessId !== businessId);
-    const src = draft.sourcePostId ? db.posts.filter((p) => p.id === draft.sourcePostId) : [];
-    return [...new Map([...src, ...saved, ...own].map((p) => [p.id, p])).values()].slice(0, 18);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, businessId, draft.sourcePostId, me?.id]);
-  const toggle = (id: ID) => {
-    const on = draft.inspirationPostIds.includes(id);
-    if (!on && draft.inspirationPostIds.length >= 6) return;
-    setDraft({ inspirationPostIds: on ? draft.inspirationPostIds.filter((x) => x !== id) : [...draft.inspirationPostIds, id] });
-  };
-  return (
-    <section>
-      <h2 className="text-xl font-black">השראה והערה</h2>
-      <p className="mb-3 mt-1 text-sm text-muted">בחרו עד 6 תמונות שהעסק יראה עם התור. {me ? "מוצגות עבודות העסק והשמורים שלך." : "התחברו כדי להוסיף גם מהשמורים."}</p>
-      <ul className="grid grid-cols-3 gap-2">
-        {candidates.map((p) => (
-          <li key={p.id}>
-            <InspirationTile post={p} on={draft.inspirationPostIds.includes(p.id)} source={p.id === draft.sourcePostId} onToggle={() => toggle(p.id)} />
-          </li>
-        ))}
-      </ul>
-      <label htmlFor="bk-note" className="mt-6 block text-sm font-semibold">
-        הערה לעסק (לא חובה)
-      </label>
-      <Textarea id="bk-note" className="mt-1.5" maxLength={300} placeholder="למשל: אורך השיער, רגישויות, משהו שחשוב לדעת" value={draft.note} onChange={(e) => setDraft({ note: e.target.value })} />
-      <p className="mt-1 text-end text-xs text-muted">{draft.note.length}/300</p>
-    </section>
-  );
-}
-
-function InspirationTile({ post, on, source, onToggle }: { post: Post; on: boolean; source: boolean; onToggle: () => void }) {
-  const url = useMediaUrl(post.cover ?? post.media[0]?.poster ?? post.media[0]?.src);
-  return (
-    <button type="button" onClick={onToggle} aria-pressed={on} aria-label={`${on ? "הסרת" : "בחירת"} השראה: ${post.caption.slice(0, 40)}`} className={clsx("relative block aspect-[3/4] w-full overflow-hidden rounded-xl bg-surface", on && "ring-[3px] ring-ink ring-offset-2 ring-offset-bg")}>
-      {url && <img src={url} alt="" className="media size-full object-cover" loading="lazy" />}
-      {source && <span className="absolute start-1.5 top-1.5 rounded-full bg-white/90 px-2 text-[10px] font-bold text-[#111]">מהפוסט שראית</span>}
-      <span className={clsx("absolute bottom-1.5 end-1.5 grid size-6 place-items-center rounded-full", on ? "bg-ink text-ink-inverse" : "border-2 border-white bg-black/20")}>{on && <Check className="size-4" aria-hidden />}</span>
-    </button>
-  );
-}
-
-function ReviewStep({ db, draft, service }: { db: DB; draft: BookingDraft; service: Service }) {
-  const b = db.businesses.find((x) => x.id === draft.businessId)!;
-  const pro = draft.professionalId ? db.professionals.find((p) => p.id === draft.professionalId) : null;
-  const dep = depositFor(service);
-  const rows: [string, React.ReactNode][] = [
-    ["עסק", b.name],
-    ["שירות", `${service.name} · ${duration(service.durationMin)}`],
-    ["איש מקצוע", pro?.name ?? "כל איש מקצוע זמין (ישובץ אוטומטית)"],
-    ["מועד", fmtDateTime(draft.start!)],
-    ["כתובת", b.isMobile ? `שירות נייד — הכתובת תתואם עם העסק` : b.address],
-  ];
-  return (
-    <section className="flex flex-col gap-4">
-      <h2 className="text-xl font-black">סיכום</h2>
-      <dl className="divide-y divide-line rounded-2xl border border-line">
-        {rows.map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-4 p-4 text-sm">
-            <dt className="text-muted">{k}</dt>
-            <dd className="text-end font-semibold">{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="rounded-2xl bg-surface p-4">
-        <div className="flex justify-between text-sm">
-          <span>מחיר {service.priceFrom ? "(החל מ־)" : ""}</span>
-          <span className="num font-bold">{price(service.price)}</span>
-        </div>
-        {dep > 0 ? (
-          <>
-            <div className="mt-2 flex justify-between text-sm">
-              <span>מקדמה לתשלום עכשיו (דמו)</span>
-              <span className="num font-bold">{price(dep)}</span>
-            </div>
-            <div className="mt-2 flex justify-between text-sm text-muted">
-              <span>יתרה לתשלום בעסק</span>
-              <span className="num">{service.priceFrom ? "החל מ־" : ""}{price(Math.max(0, service.price - dep))}</span>
-            </div>
-          </>
-        ) : (
-          <p className="mt-2 text-sm text-muted">התשלום מתבצע בעסק. לא נדרש תשלום עכשיו.</p>
-        )}
-        <p className="mt-3 text-xs text-muted">המחיר נשמר ברגע ההזמנה — שינויי מחיר עתידיים לא ישפיעו על התור הזה.</p>
-      </div>
-      <div className="flex gap-3 rounded-2xl border border-line p-4 text-sm">
-        {service.approval === "manual" ? <Hourglass className="size-5 shrink-0" aria-hidden /> : <CheckCircle2 className="size-5 shrink-0" aria-hidden />}
-        <div>
-          <div className="font-semibold">{service.approval === "manual" ? "השירות דורש אישור העסק" : "אישור מיידי"}</div>
-          <p className="mt-0.5 text-muted">
-            {service.approval === "manual"
-              ? `המועד נשמר עבורך עד ${b.policy.requestExpiryHours} שעות. אם העסק לא יגיב — הבקשה תפוג והמועד ישוחרר.${dep ? " אחרי האישור תתבקש/י לשלם מקדמה." : ""}`
-              : dep
-                ? `המועד יישמר ${b.policy.paymentHoldMinutes} דקות לתשלום המקדמה.`
-                : "התור ייקבע מיד אחרי האישור."}
-          </p>
-        </div>
-      </div>
-      <div className="rounded-2xl border border-line p-4 text-sm">
-        <div className="font-semibold">מדיניות ביטול</div>
-        <p className="mt-0.5 text-muted">{b.policy.text}</p>
-      </div>
-      {draft.inspirationPostIds.length > 0 && <p className="text-sm text-muted">מצורפות {draft.inspirationPostIds.length} תמונות השראה{draft.note ? " והערה" : ""}.</p>}
-    </section>
-  );
-}
-
-function BookingDone({ appointmentId }: { appointmentId: ID }) {
-  const db = useApp((s) => s.db);
-  const a = db.appointments.find((x) => x.id === appointmentId);
-  const [pay, setPay] = useState(a?.status === "pending_payment");
-  if (!a) return null;
-  const b = db.businesses.find((x) => x.id === a.businessId)!;
-  const pro = db.professionals.find((x) => x.id === a.professionalId);
-  const title = a.status === "confirmed" ? "התור נקבע!" : a.status === "pending_approval" ? "הבקשה נשלחה" : a.status === "pending_payment" ? "נשאר רק לשלם מקדמה" : STATUS_LABEL[a.status];
-  return (
-    <>
-      <TopBar title="קביעת תור" />
-      <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-4 py-10 text-center">
-        <span className={clsx("grid size-20 place-items-center rounded-full", a.status === "confirmed" ? "bg-ok-soft text-ok" : "bg-surface")}>
-          {a.status === "confirmed" ? <Check className="size-10" aria-hidden /> : a.status === "pending_payment" ? <CreditCard className="size-9" aria-hidden /> : <Hourglass className="size-9" aria-hidden />}
-        </span>
-        <h1 className="animate-pop text-3xl font-black">{title}</h1>
-        <p className="text-muted">
-          {a.snapshot.serviceName} ב{b.name}
-          <br />
-          {fmtDateTime(a.start)} · אצל {pro?.name}
-        </p>
-        {a.status === "pending_approval" && <p className="rounded-2xl bg-surface p-4 text-sm">נעדכן אותך בהתראה באפליקציה ברגע שהעסק יאשר או ידחה. תוקף הבקשה עד {fmtDateTime(a.holdExpiresAt!)}.</p>}
-        {a.status === "pending_payment" && (
-          <Button size="lg" className="w-full" onClick={() => setPay(true)}>
-            תשלום מקדמה {price(a.snapshot.deposit)} (דמו)
-          </Button>
-        )}
-        <div className="flex w-full flex-col gap-2">
-          <LinkButton to={`/appointments/${a.id}`} variant={a.status === "pending_payment" ? "secondary" : "primary"} size="lg">
-            לפרטי התור
-          </LinkButton>
-          <LinkButton to="/" variant="ghost">
-            חזרה לפיד
-          </LinkButton>
-        </div>
-        <p className="text-xs text-muted">ההתראות בדמו מוצגות באפליקציה בלבד — לא נשלחים SMS, אימייל או התראות פוש.</p>
-      </div>
-      <DemoPaymentSheet open={pay} onClose={() => setPay(false)} appointment={a} />
-    </>
   );
 }
 
