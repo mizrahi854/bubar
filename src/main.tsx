@@ -48,6 +48,7 @@ import { ReportsScreen } from "./biz/screens/Reports";
 import { TourScreen } from "./biz/screens/Tour";
 import { BizSettingsScreen as ProSettingsScreen } from "./biz/screens/Settings";
 import { PublicBookingScreen } from "./biz/screens/PublicBooking";
+import { DesktopStage, STAGE_QUERY, isEmbedded, wantsStage } from "./ui/stage";
 
 const routes: RouteObject[] = [
   // Beautigo Pro — business management on Supabase (or the in-browser preview)
@@ -124,11 +125,29 @@ const routes: RouteObject[] = [
 document.documentElement.lang = "he";
 document.documentElement.dir = "rtl";
 
-// The hosted demo runs inside a sandboxed frame where URL hashes are not shareable, so it uses an in-memory router.
-const router = import.meta.env.VITE_ROUTER === "memory" ? createMemoryRouter(routes) : createHashRouter(routes);
+const root = createRoot(document.getElementById("root")!);
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <RouterProvider router={router} />
-  </StrictMode>,
-);
+if (wantsStage()) {
+  // Wide screens: show the network inside a phone, exactly as on mobile.
+  document.documentElement.dataset.stage = "";
+  root.render(
+    <StrictMode>
+      <DesktopStage />
+    </StrictMode>,
+  );
+} else {
+  if (isEmbedded()) document.documentElement.dataset.embed = "";
+  // The hosted demo runs inside a sandboxed frame where URL hashes are not shareable, so it uses an in-memory router.
+  const router = import.meta.env.VITE_ROUTER === "memory" ? createMemoryRouter(routes) : createHashRouter(routes);
+  root.render(
+    <StrictMode>
+      <RouterProvider router={router} />
+    </StrictMode>,
+  );
+}
+
+// Crossing the desktop breakpoint swaps between the phone stage and the full-screen app.
+if (!isEmbedded()) {
+  const mq = window.matchMedia(STAGE_QUERY);
+  mq.addEventListener("change", () => window.location.reload());
+}

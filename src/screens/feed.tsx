@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { INSPIRATION_REELS, type InspirationReel } from "../data/inspiration";
-import { InspirationFeedCard } from "./inspiration";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { AlertTriangle, Bell, Bookmark, CalendarPlus, ChevronDown, Heart, Info, Loader2, MapPin, MessageCircle, MoreHorizontal, Pause, Play, Send, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, Bell, Bookmark, CalendarPlus, ChevronDown, Film, Heart, Info, MapPin, MessageCircle, MoreHorizontal, Play, Plus, Send, Sparkles, Volume2, VolumeX } from "lucide-react";
 import clsx from "clsx";
 import { rankFeed, type FeedTab, type RankedPost } from "../domain/feed";
-import { CATEGORY_LABEL, compact, duration, price } from "../domain/format";
+import { compact, price } from "../domain/format";
 import type { MediaItem, Post, TrafficSource } from "../domain/types";
 import { isSaved, savePost, sharePostCount, toggleFollowBusiness, toggleLike, trackEvent, trackWatch } from "../store/actions";
 import { Overlays, RichText, filterCss } from "../ui/media-fx";
@@ -81,7 +79,7 @@ export function FeedScreen() {
           </div>
         )}
       </header>
-      <FeedList key={tab + (cityId ?? "")} items={items} tabKey={tab} inspiration={tab === "for_you"} empty={<FeedEmpty tab={tab} cityName={city?.name} onPickCity={() => setCityOpen(true)} />} />
+      <FeedList key={tab + (cityId ?? "")} items={items} tabKey={tab} empty={<FeedEmpty tab={tab} cityName={city?.name} onPickCity={() => setCityOpen(true)} />} />
       <CityPicker open={cityOpen} onClose={() => setCityOpen(false)} />
     </div>
   );
@@ -123,29 +121,23 @@ function FeedEmpty({ tab, cityName, onPickCity }: { tab: FeedTab; cityName?: str
   );
 }
 
-/** Vertical snap list; exactly one item is active and only it may play. */
 const sourceOf = (tabKey: string): TrafficSource => (tabKey === "following" ? "following" : tabKey === "nearby" ? "nearby" : tabKey === "for_you" ? "feed" : "share");
 
-/** One Instagram inspiration card after every N Beautigo posts (For you tab only). */
-const INSPIRATION_EVERY = 4;
-type Row = { kind: "post"; item: RankedPost } | { kind: "ig"; reel: InspirationReel };
+/** Items further than this from the active one render as a lightweight poster only. */
+const LIVE_WINDOW = 2;
 
-export function FeedList({ items, tabKey, empty, startIndex = 0, inspiration = false }: { items: RankedPost[]; tabKey: string; empty?: React.ReactNode; startIndex?: number; inspiration?: boolean }) {
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    let k = 0;
-    items.forEach((item, i) => {
-      out.push({ kind: "post", item });
-      if (inspiration && (i + 1) % INSPIRATION_EVERY === 0 && k < INSPIRATION_REELS.length) out.push({ kind: "ig", reel: INSPIRATION_REELS[k++] });
-    });
-    return out;
-  }, [items, inspiration]);
+/**
+ * Vertical, full-screen snap list (TikTok / Reels). Exactly one item is active and only it plays;
+ * its neighbours are mounted and buffered so the next swipe starts instantly.
+ */
+export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: RankedPost[]; tabKey: string; empty?: React.ReactNode; startIndex?: number }) {
   const scroller = useRef<HTMLDivElement>(null);
   const saved = useApp((s) => (tabKey in s.feedIndex ? s.feedIndex[tabKey as FeedTab] : 0));
-  const [active, setActive] = useState(startIndex || saved || 0);
+  const [active, setActive] = useState(Math.min(startIndex || saved || 0, Math.max(0, items.length - 1)));
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
   const [muted, setMuted] = useState(true);
   const reduced = useReducedMotion();
+  const toggleMute = useCallback(() => setMuted((m) => !m), []);
 
   useEffect(() => {
     const on = () => setVisible(document.visibilityState === "visible");
@@ -156,22 +148,29 @@ export function FeedList({ items, tabKey, empty, startIndex = 0, inspiration = f
   // Restore position when returning from a profile or booking
   useEffect(() => {
     const idx = startIndex || saved;
-    if (idx && scroller.current) scroller.current.querySelector<HTMLElement>(`[data-index="${idx}"]`)?.scrollIntoView({ block: "start" });
+    if (idx && scroller.current) scroller.current.scrollTop = idx * scroller.current.clientHeight;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Active item = the page the snap position sits on. Computed from scrollTop so it flips the moment
+  // a swipe settles past the midpoint, without waiting for observers.
   useEffect(() => {
-    const root = scroller.current;
-    if (!root) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) if (e.isIntersecting && e.intersectionRatio >= 0.6) setActive(Number((e.target as HTMLElement).dataset.index));
-      },
-      { root, threshold: [0.6] },
-    );
-    root.querySelectorAll("[data-index]").forEach((el) => io.observe(el));
-    return () => io.disconnect();
-  }, [rows.length]);
+    const el = scroller.current;
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const idx = Math.round(el.scrollTop / Math.max(1, el.clientHeight));
+        setActive(Math.max(0, Math.min(items.length - 1, idx)));
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, [items.length]);
 
   useEffect(() => {
     if (tabKey in useApp.getState().feedIndex) useApp.setState((s) => ({ feedIndex: { ...s.feedIndex, [tabKey]: active } }));
@@ -181,31 +180,40 @@ export function FeedList({ items, tabKey, empty, startIndex = 0, inspiration = f
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest("input,textarea,select,[role=dialog]")) return;
       const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-      if (!step) return;
+      if (!step || !scroller.current) return;
       e.preventDefault();
-      const next = Math.max(0, Math.min(rows.length - 1, active + step));
-      scroller.current?.querySelector<HTMLElement>(`[data-index="${next}"]`)?.scrollIntoView({ behavior: reduced ? "auto" : "smooth" });
+      const next = Math.max(0, Math.min(items.length - 1, active + step));
+      scroller.current.scrollTo({ top: next * scroller.current.clientHeight, behavior: reduced ? "auto" : "smooth" });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, rows.length, reduced]);
+  }, [active, items.length, reduced]);
 
   if (!items.length) return <div className="grid h-full place-items-center px-6 text-ink">{empty}</div>;
   return (
-    <div ref={scroller} className="no-scrollbar h-full snap-y snap-mandatory overflow-y-auto overscroll-contain" aria-label="פיד עבודות">
-      {rows.map((r, i) =>
-        r.kind === "ig" ? (
-          <InspirationFeedCard key={r.reel.id} reel={r.reel} index={i} near={Math.abs(i - active) <= 1} />
+    <div ref={scroller} className="feed-scroller no-scrollbar h-full snap-y snap-mandatory overflow-y-auto overscroll-contain" aria-label="פיד עבודות">
+      {items.map((item, i) =>
+        Math.abs(i - active) > LIVE_WINDOW ? (
+          <FeedPlaceholder key={item.post.id} post={item.post} index={i} />
         ) : (
-          <FeedItem key={r.item.post.id} item={r.item} index={i} active={i === active} near={Math.abs(i - active) <= 1} pageVisible={visible} muted={muted} onToggleMute={() => setMuted((m) => !m)} source={sourceOf(tabKey)} />
+          <FeedItem key={item.post.id} item={item} index={i} active={i === active} preload={i > active && i - active <= 1} pageVisible={visible} muted={muted} onToggleMute={toggleMute} source={sourceOf(tabKey)} />
         ),
       )}
-      <div className="flex h-40 snap-end items-center justify-center text-sm text-white/70">ראית הכול כרגע ✨</div>
     </div>
   );
 }
 
-function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute, source }: { item: RankedPost; index: number; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; source: TrafficSource }) {
+/** Off-screen page: keeps the scroll geometry and shows the poster frame, nothing else. */
+const FeedPlaceholder = memo(function FeedPlaceholder({ post, index }: { post: Post; index: number }) {
+  const poster = useMediaUrl(post.media[0]?.poster ?? post.cover ?? post.media[0]?.src);
+  return (
+    <section data-index={index} className="feed-page relative h-[100dvh] snap-start snap-always bg-black" aria-hidden>
+      {poster && <img src={poster} alt="" loading="lazy" decoding="async" className="media absolute inset-0 size-full object-cover" />}
+    </section>
+  );
+});
+
+const FeedItem = memo(function FeedItem({ item, index, active, preload, pageVisible, muted, onToggleMute, source }: { item: RankedPost; index: number; active: boolean; preload: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; source: TrafficSource }) {
   const { post, business, service } = item;
   const db = useApp((s) => s.db);
   const me = useMe();
@@ -214,12 +222,15 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute,
   const captionsOn = useApp((s) => s.settings.captions);
   const [sheet, setSheet] = useState<null | "comments" | "save" | "more" | "report" | "why">(null);
   const [burst, setBurst] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const liked = !!me && post.likedBy.includes(me.id);
   const saved = isSaved(db, me?.id ?? null, post.id);
   const following = !!me?.followingBusinesses.includes(business.id);
   const pro = db.professionals.find((p) => p.id === post.professionalId);
   const city = db.cities.find((c) => c.id === post.cityId);
   const comments = db.comments.filter((c) => c.postId === post.id && !c.hidden).length;
+  const credit = post.media[0];
+  const own = me?.businessId === business.id && (mode === "business" || mode === "staff");
   const viewed = useRef(false);
 
   useEffect(() => {
@@ -261,127 +272,99 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute,
   };
 
   return (
-    <section data-index={index} aria-label={`${post.kind === "reel" ? "רילס" : "פוסט"} של ${business.name}`} className="relative flex h-[100dvh] snap-start snap-always items-center justify-center lg:py-4">
-      <div className="relative h-full w-full overflow-hidden bg-[#111] lg:aspect-[9/16] lg:h-full lg:w-auto lg:rounded-[28px]">
-        {post.kind === "reel" ? (
-          <ReelVideo media={post.media[0]} active={active} near={near} pageVisible={pageVisible} muted={muted} onToggleMute={onToggleMute} onDoubleTap={() => !liked && like()} onWatch={(sec, done) => trackWatch(business.id, post.id, sec, done, source)} />
+    <section data-index={index} aria-label={`${post.kind === "reel" ? "רילס" : "פוסט"} של ${business.name}`} className="feed-page relative h-[100dvh] snap-start snap-always overflow-hidden bg-black">
+      {post.kind === "reel" ? (
+        <ReelVideo media={post.media[0]} active={active} preload={preload} pageVisible={pageVisible} muted={muted} onToggleMute={onToggleMute} onDoubleTap={() => !liked && like()} onWatch={(sec, done) => trackWatch(business.id, post.id, sec, done, source)} />
+      ) : (
+        <ImageMedia media={post.media} onDoubleTap={() => !liked && like()} />
+      )}
+      {burst > 0 && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center">
+          <Heart key={burst} className="size-28 animate-heart fill-white text-white drop-shadow-xl" aria-hidden />
+        </div>
+      )}
+      {captionsOn && post.subtitle && (
+        <p className="pointer-events-none absolute inset-x-6 top-[40%] text-center text-lg font-bold leading-snug text-white text-shadow" aria-hidden>
+          {post.subtitle}
+        </p>
+      )}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[52%] bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
+      {item.campaignId && <span className="absolute start-3 top-[calc(4.25rem+env(safe-area-inset-top))] rounded-md bg-white/90 px-2 py-0.5 text-[11px] font-bold text-[#111]">ממומן</span>}
+
+      {/* Bottom info — name, caption, credit, booking */}
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 ps-4 pe-[4.75rem] pb-[calc(6.4rem+env(safe-area-inset-bottom))]">
+        <Link to={`/b/${business.id}`} className="flex min-w-0 items-center gap-2 self-start">
+          <span className="truncate text-[16px] font-bold text-shadow">{business.name}</span>
+          <span className="truncate text-[13px] text-white/75 text-shadow">· {city?.name}</span>
+        </Link>
+        <button type="button" onClick={() => setExpanded((e) => !e)} className={clsx("text-start text-[14.5px] leading-[1.4] text-shadow", !expanded && "line-clamp-2")} aria-expanded={expanded}>
+          <RichText text={post.caption} resolveHandle={(h) => { const b = db.businesses.find((x) => x.username === h); return b ? `/b/${b.id}` : null; }} />
+          {post.tags.length > 0 && (
+            <span className="text-white/90">
+              {" "}
+              {post.tags.slice(0, 3).map((t) => (
+                <Link key={t} to={`/tag/${encodeURIComponent(t)}`} onClick={(e) => e.stopPropagation()} className="font-semibold">
+                  #{t}{" "}
+                </Link>
+              ))}
+            </span>
+          )}
+        </button>
+        {credit?.creator && (
+          <a href={credit.sourceReelUrl ?? credit.sourceProfileUrl} target="_blank" rel="noopener noreferrer" className="flex min-w-0 items-center gap-1.5 self-start text-[12.5px] text-white/85 text-shadow hover:text-white">
+            <Film className="size-3.5 shrink-0" aria-hidden />
+            <span className="credit-marquee truncate">
+              <span className="ltr">{credit.creator}</span> · הסרטון המקורי באינסטגרם
+            </span>
+          </a>
+        )}
+        {own ? (
+          <Link to={mode === "business" ? `/create?edit=${post.id}` : "/manage"} className="feed-cta">
+            {mode === "business" ? "עריכת הפוסט" : "ליומן שלי"}
+          </Link>
         ) : (
-          <ImageMedia media={post.media} onDoubleTap={() => !liked && like()} />
+          <button type="button" onClick={book} className="feed-cta">
+            <CalendarPlus className="size-[18px] shrink-0" aria-hidden />
+            <span className="truncate">{service ? `קביעת תור · ${service.name}` : `קביעת תור ב${business.name}`}</span>
+            {service && <span className="num ms-auto shrink-0 font-semibold text-[#55555c]">{price(service.price, service.priceFrom)}</span>}
+          </button>
         )}
-        {burst > 0 && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <Heart key={burst} className="size-28 animate-heart fill-white text-white drop-shadow-xl" aria-hidden />
-          </div>
-        )}
-        {captionsOn && post.subtitle && (
-          <p className="pointer-events-none absolute inset-x-6 top-[42%] text-center text-lg font-bold leading-snug text-white text-shadow" aria-hidden>
-            {post.subtitle}
-          </p>
-        )}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[58%] bg-gradient-to-t from-black/85 via-black/35 to-transparent" />
-        <div className="absolute start-3 top-[calc(4.5rem+env(safe-area-inset-top))] flex flex-col items-start gap-1.5 lg:top-16">
-          {item.campaignId && <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-bold text-[#111]">ממומן</span>}
-          {post.isSample && <span className="rounded-full bg-black/50 px-2.5 py-0.5 text-[11px] font-medium text-white backdrop-blur">תוכן לדוגמה · איור מקורי</span>}
-          {(post.media[0]?.sourceReelUrl || post.media[0]?.creator) && (
-            <a
-              href={post.media[0].sourceReelUrl ?? post.media[0].sourceProfileUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full bg-black/50 px-2.5 py-0.5 text-[11px] font-medium text-white backdrop-blur underline-offset-2 hover:underline"
-            >
-              קרדיט: {post.media[0].creator ?? "המקור המקורי"} ↗
-            </a>
+      </div>
+
+      {/* Action rail */}
+      <div className="absolute bottom-[calc(10.75rem+env(safe-area-inset-bottom))] end-2 flex w-14 flex-col items-center gap-[18px]">
+        <div className="relative mb-2">
+          {hasLiveStory(db, business.id) ? (
+            <StoryAvatar business={business} size={46} dark />
+          ) : (
+            <Link to={`/b/${business.id}`} aria-label={`הפרופיל של ${business.name}`} className="block rounded-full ring-2 ring-white">
+              <Avatar src={business.avatar} name={business.name} size={46} />
+            </Link>
+          )}
+          {mode !== "business" && !following && (
+            <button type="button" onClick={follow} aria-label={`מעקב אחרי ${business.name}`} className="absolute -bottom-2.5 start-1/2 grid size-6 -translate-x-1/2 place-items-center rounded-full bg-white text-[#111] shadow active:scale-90 rtl:translate-x-1/2">
+              <Plus className="size-4 stroke-[3]" aria-hidden />
+            </button>
           )}
         </div>
-
-        {/* Bottom info */}
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2.5 p-4 pb-[calc(6.25rem+env(safe-area-inset-bottom))] pe-[4.5rem] lg:pb-5 lg:pe-4">
-          <div className="flex items-center gap-2.5">
-            {hasLiveStory(db, business.id) ? (
-              <StoryAvatar business={business} size={40} dark />
-            ) : (
-              <Link to={`/b/${business.id}`} aria-hidden tabIndex={-1}>
-                <Avatar src={business.avatar} name={business.name} size={42} ring />
-              </Link>
-            )}
-            <Link to={`/b/${business.id}`} className="flex min-w-0 items-center gap-2.5">
-              <span className="min-w-0">
-                <span className="block truncate font-bold text-shadow">{business.name}</span>
-                <span className="block truncate text-xs text-white/80">
-                  {pro ? `${pro.name} · ` : ""}
-                  {service ? CATEGORY_LABEL[service.category] : CATEGORY_LABEL[business.categories[0]]}
-                </span>
-              </span>
-            </Link>
-            {mode !== "business" && (
-              <button type="button" onClick={follow} aria-pressed={following} className={clsx("h-8 shrink-0 rounded-full px-3.5 text-xs font-bold transition active:scale-95", following ? "border border-white/60 text-white" : "bg-white text-[#111]")}>
-                {following ? "במעקב" : "מעקב"}
-              </button>
-            )}
-          </div>
-          <p className="line-clamp-2 text-[15px] leading-snug text-shadow">
-            <RichText text={post.caption} resolveHandle={(h) => { const b = db.businesses.find((x) => x.username === h); return b ? `/b/${b.id}` : null; }} />
-          </p>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-white/85">
-            <span className="inline-flex items-center gap-1">
-              <MapPin className="size-3.5" aria-hidden /> {business.isMobile ? `שירות נייד · ${city?.name}` : city?.name}
-            </span>
-            {post.tags.slice(0, 3).map((t) => (
-              <Link key={t} to={`/tag/${encodeURIComponent(t)}`} className="rounded-full bg-white/15 px-2 py-0.5 hover:bg-white/25">
-                #{t}
-              </Link>
-            ))}
-            <button type="button" onClick={() => setSheet("why")} className="inline-flex items-center gap-1 rounded-full px-1 py-0.5 text-white/70 hover:text-white">
-              <Info className="size-3.5" aria-hidden /> למה זה מוצג לי
-            </button>
-          </div>
-          <div className="glass-light flex items-center gap-3 rounded-[22px] p-2 ps-4">
-            <div className="min-w-0 flex-1">
-              {service ? (
-                <>
-                  <div className="truncate text-sm font-bold">{service.name}</div>
-                  <div className="truncate text-xs text-[#4a4a52]">
-                    <span className="num font-semibold text-[#111]">{price(service.price, service.priceFrom)}</span> · {duration(service.durationMin)}
-                    {service.approval === "manual" && " · באישור העסק"}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="truncate text-sm font-bold">רוצה את זה?</div>
-                  <div className="truncate text-xs text-[#4a4a52]">בחרו שירות ב{business.name}</div>
-                </>
-              )}
-            </div>
-            {me?.businessId === business.id && (mode === "business" || mode === "staff") ? (
-              <Link to={mode === "business" ? `/create?edit=${post.id}` : "/manage"} className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[#111] px-4 text-sm font-bold text-white active:scale-95">
-                {mode === "business" ? "עריכת הפוסט" : "ליומן שלי"}
-              </Link>
-            ) : (
-              <button type="button" onClick={book} className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[#111] px-4 text-sm font-bold text-white active:scale-95">
-                <CalendarPlus className="size-4" aria-hidden /> קביעת תור
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Action rail */}
-        <div className="absolute bottom-[calc(13.5rem+env(safe-area-inset-bottom))] end-2 flex flex-col items-center gap-3 lg:bottom-28">
-          <Rail label={liked ? "ביטול לייק" : "לייק"} count={post.likedBy.length} pressed={liked} onClick={like}>
-            <Heart className={clsx("size-7", liked && "animate-pop fill-white")} />
-          </Rail>
-          <Rail label="תגובות" count={comments} onClick={() => setSheet("comments")}>
-            <MessageCircle className="size-7 -scale-x-100" />
-          </Rail>
-          <Rail label={saved ? "שמור — ניהול אוספים" : "שמירה"} count={post.savedCount} pressed={saved} onClick={save}>
-            <Bookmark className={clsx("size-7", saved && "fill-white")} />
-          </Rail>
-          <Rail label="שיתוף" count={post.shares} onClick={share}>
-            <Send className="size-7 flip-rtl" />
-          </Rail>
-          <Rail label="אפשרויות נוספות" onClick={() => setSheet("more")}>
-            <MoreHorizontal className="size-7" />
-          </Rail>
-        </div>
+        <Rail label={liked ? "ביטול לייק" : "לייק"} count={post.likedBy.length} pressed={liked} onClick={like}>
+          <Heart className={clsx("size-[30px]", liked && "animate-pop fill-[#ff3b5c] text-[#ff3b5c]")} />
+        </Rail>
+        <Rail label="תגובות" count={comments} onClick={() => setSheet("comments")}>
+          <MessageCircle className="size-[30px] -scale-x-100" />
+        </Rail>
+        <Rail label={saved ? "שמור — ניהול אוספים" : "שמירה"} count={post.savedCount} pressed={saved} onClick={save}>
+          <Bookmark className={clsx("size-[28px]", saved && "fill-white")} />
+        </Rail>
+        <Rail label="שיתוף" count={post.shares} onClick={share}>
+          <Send className="size-[28px] flip-rtl" />
+        </Rail>
+        <Rail label="אפשרויות נוספות" onClick={() => setSheet("more")}>
+          <MoreHorizontal className="size-7" />
+        </Rail>
+        <button type="button" onClick={() => setSheet("why")} aria-label="למה זה מוצג לי" className="grid size-9 place-items-center rounded-full text-white/70 hover:text-white">
+          <Info className="size-5" aria-hidden />
+        </button>
       </div>
 
       <CommentsSheet post={post} open={sheet === "comments"} onClose={() => setSheet(null)} />
@@ -391,15 +374,15 @@ function FeedItem({ item, index, active, near, pageVisible, muted, onToggleMute,
       <WhySheet item={item} open={sheet === "why"} onClose={() => setSheet(null)} />
     </section>
   );
-}
+});
 
 function Rail({ label, count, pressed, onClick, children }: { label: string; count?: number; pressed?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center">
-      <button type="button" onClick={onClick} aria-label={label} aria-pressed={pressed} className="grid size-12 place-items-center rounded-full text-white drop-shadow transition active:scale-90">
+      <button type="button" onClick={onClick} aria-label={label} aria-pressed={pressed} className="grid size-11 place-items-center rounded-full text-white drop-shadow-[0_1px_6px_rgb(0_0_0/0.45)] transition-transform duration-150 active:scale-[0.86]">
         {children}
       </button>
-      {count !== undefined && <span className="num -mt-1 text-xs font-semibold text-shadow">{compact(count)}</span>}
+      {count !== undefined && <span className="num -mt-0.5 text-[12px] font-semibold text-shadow">{compact(count)}</span>}
     </div>
   );
 }
@@ -443,13 +426,21 @@ function WhySheet({ item, open, onClose }: { item: RankedPost; open: boolean; on
   );
 }
 
-/** Plays only when active and the page is visible. Poster first; resilient to failures. */
-function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDoubleTap, onWatch }: { media: MediaItem; active: boolean; near: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; onDoubleTap: () => void; onWatch?: (seconds: number, completed: boolean) => void }) {
+/**
+ * Plays only when active and the page is visible. The next reel is buffered (preload=auto) and parked
+ * on its first frame, so swiping to it starts playback with no spinner. Progress is drawn with a
+ * transform on every frame (no React state per tick).
+ */
+function ReelVideo({ media, active, preload, pageVisible, muted, onToggleMute, onDoubleTap, onWatch }: { media: MediaItem; active: boolean; preload: boolean; pageVisible: boolean; muted: boolean; onToggleMute: () => void; onDoubleTap: () => void; onWatch?: (seconds: number, completed: boolean) => void }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
+  const track = useRef<HTMLDivElement>(null);
   // Watch time for creator insights: seconds actually played while this reel is the active one
   const watch = useRef({ seconds: 0, last: -1, completed: false });
   const onWatchRef = useRef(onWatch);
-  onWatchRef.current = onWatch;
+  useEffect(() => {
+    onWatchRef.current = onWatch;
+  });
   useEffect(() => {
     if (active) {
       watch.current = { seconds: 0, last: -1, completed: false };
@@ -470,18 +461,47 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
   const reduced = useReducedMotion();
   const [state, setState] = useState<"loading" | "playing" | "paused" | "error">("loading");
   const [userPaused, setUserPaused] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const lastTap = useRef(0);
   const shouldAutoplay = active && pageVisible && autoplay && !reduced && !userPaused;
 
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
-    if (shouldAutoplay) v.play().catch(() => setState("paused"));
-    else {
+    if (shouldAutoplay) {
+      v.play().then(() => setBlocked(false)).catch(() => {
+        setBlocked(true);
+        setState("paused");
+      });
+    } else {
       v.pause();
-      if (!active) setUserPaused(false);
+      if (!active) {
+        setUserPaused(false);
+        // Leaving a reel rewinds it, like Reels/TikTok
+        if (v.currentTime > 0) v.currentTime = media.trimStart ?? 0;
+      }
     }
-  }, [shouldAutoplay, active]);
+  }, [shouldAutoplay, active, media.trimStart]);
+
+  // Progress bar: one rAF loop while active
+  useEffect(() => {
+    if (!active) return;
+    let raf = 0;
+    const tick = () => {
+      const v = ref.current;
+      const el = bar.current;
+      if (v && el && v.duration) {
+        const start = media.trimStart ?? 0;
+        const end = media.trimEnd ?? v.duration;
+        el.style.transform = `scaleX(${Math.min(1, Math.max(0, (v.currentTime - start) / Math.max(0.1, end - start)))})`;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active, media.trimStart, media.trimEnd]);
 
   // Respect the trim window chosen in the composer (playback range only).
   const onTime = useCallback(() => {
@@ -524,44 +544,59 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
     setTimeout(() => lastTap.current && Date.now() - lastTap.current >= 270 && toggle(), 290);
   };
 
+  // Scrub along the progress track (RTL-aware: progress grows from the start edge)
+  const seek = (clientX: number) => {
+    const v = ref.current;
+    const t = track.current;
+    if (!v || !t || !v.duration) return;
+    const r = t.getBoundingClientRect();
+    const rtl = getComputedStyle(t).direction === "rtl";
+    const f = Math.min(1, Math.max(0, rtl ? (r.right - clientX) / r.width : (clientX - r.left) / r.width));
+    const start = media.trimStart ?? 0;
+    const end = media.trimEnd ?? v.duration;
+    v.currentTime = start + f * (end - start);
+  };
+
+  const mountVideo = active || (preload && !dataSaver) || ready;
+
   return (
     <>
-      {poster && <img src={poster} alt="" className="media absolute inset-0 size-full object-cover" aria-hidden />}
-      {src && (
+      {poster && <img src={poster} alt="" decoding="async" className="media absolute inset-0 size-full object-cover" aria-hidden />}
+      {src && mountVideo && (
         <video
           ref={ref}
-          className="media absolute inset-0 size-full object-cover"
+          className={clsx("media absolute inset-0 size-full object-cover transition-opacity duration-200", ready ? "opacity-100" : "opacity-0")}
           style={{ filter: filterCss(media.filter) }}
-          poster={poster ?? undefined}
           muted={muted}
           playsInline
           loop={!media.trimEnd}
-          preload={active ? "auto" : near && !dataSaver ? "metadata" : "none"}
+          preload="auto"
+          disablePictureInPicture
           onPlaying={() => setState("playing")}
           onPause={() => setState((s) => (s === "error" ? s : "paused"))}
           onWaiting={() => setState("loading")}
+          onLoadedData={() => setReady(true)}
           onCanPlay={() => setState((s) => (s === "loading" ? (ref.current?.paused ? "paused" : "playing") : s))}
           onLoadedMetadata={() => {
             if (media.trimStart && ref.current) ref.current.currentTime = media.trimStart;
           }}
           onTimeUpdate={onTime}
+          onError={() => setState("error")}
           onClick={onClick}
           aria-label="סרטון"
-        >
-          <source src={src} type="video/mp4" onError={media.srcWebm ? undefined : () => setState("error")} />
-          {media.srcWebm && <source src={media.srcWebm} type="video/webm" onError={() => setState("error")} />}
-        </video>
+          src={src}
+        />
       )}
       <Overlays items={media.overlays} />
       <div className="pointer-events-none absolute inset-0 grid place-items-center">
-        {active && state === "loading" && <Loader2 className="size-10 animate-spin text-white/80" aria-label="טוען סרטון" />}
-        {active && state === "paused" && (
-          <button type="button" onClick={toggle} className="glass-dark pointer-events-auto grid size-[72px] place-items-center rounded-full" aria-label="הפעלה">
-            <Play className="size-8 translate-x-[-2px] fill-white" />
+        {active && state === "loading" && ready && <span className="feed-buffering" aria-label="טוען סרטון" />}
+        {active && state === "paused" && (userPaused || blocked) && (
+          <button type="button" onClick={toggle} className="pointer-events-auto grid size-[76px] place-items-center rounded-full bg-black/35 animate-fade" aria-label="הפעלה">
+            <Play className="size-9 translate-x-[-2px] fill-white text-white" />
           </button>
         )}
         {state === "error" && (
-          <div className="glass-dark pointer-events-auto flex flex-col items-center gap-3 rounded-3xl px-6 py-5 text-center">
+          <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-3xl bg-black/70 px-6 py-5 text-center">
             <AlertTriangle className="size-7" aria-hidden />
             <p className="text-sm">לא הצלחנו לטעון את הסרטון</p>
             <button type="button" onClick={toggle} className="rounded-full bg-white px-4 py-1.5 text-sm font-semibold text-[#111]">
@@ -570,16 +605,33 @@ function ReelVideo({ media, active, near, pageVisible, muted, onToggleMute, onDo
           </div>
         )}
       </div>
-      <div className="absolute end-3 top-[calc(4.5rem+env(safe-area-inset-top))] z-10 flex flex-col gap-2 lg:top-4">
-        <button type="button" onClick={onToggleMute} className="glass-dark grid size-11 place-items-center rounded-full" aria-label={muted ? "הפעלת קול" : "השתקה"} aria-pressed={!muted}>
-          {muted ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
-        </button>
-        {active && (
-          <button type="button" onClick={toggle} className="glass-dark grid size-11 place-items-center rounded-full" aria-label={state === "playing" ? "השהיה" : "הפעלה"}>
-            {state === "playing" ? <Pause className="size-5" /> : <Play className="size-5" />}
-          </button>
-        )}
-      </div>
+      <button type="button" onClick={onToggleMute} className="absolute end-3 top-[calc(4.25rem+env(safe-area-inset-top))] z-10 grid size-9 place-items-center rounded-full bg-black/35 text-white" aria-label={muted ? "הפעלת קול" : "השתקה"} aria-pressed={!muted}>
+        {muted ? <VolumeX className="size-[18px]" /> : <Volume2 className="size-[18px]" />}
+      </button>
+      {active && (
+        <div
+          ref={track}
+          className={clsx("feed-progress absolute inset-x-0 z-10", scrubbing && "is-scrubbing")}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setScrubbing(true);
+            seek(e.clientX);
+          }}
+          onPointerMove={(e) => scrubbing && seek(e.clientX)}
+          onPointerUp={() => setScrubbing(false)}
+          onPointerCancel={() => setScrubbing(false)}
+          role="slider"
+          aria-label="מיקום בסרטון"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={0}
+          tabIndex={-1}
+        >
+          <div className="feed-progress-track">
+            <div ref={bar} className="feed-progress-bar" />
+          </div>
+        </div>
+      )}
     </>
   );
 }

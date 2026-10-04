@@ -63,6 +63,7 @@ export function AppShell() {
   const mode = useMode();
   const loc = useLocation();
   const isFeed = loc.pathname === "/" || loc.pathname.startsWith("/reel/");
+  const bare = loc.pathname === "/signin";
   const items = navFor(mode);
   return (
     <>
@@ -70,10 +71,10 @@ export function AppShell() {
         דילוג לתוכן
       </a>
       <SideNav items={items} />
-      <main id="main" className={clsx("min-h-dvh lg:ps-72", !isFeed && "pb-[calc(6.5rem+env(safe-area-inset-bottom))] lg:pb-0")}>
+      <main id="main" className={clsx("min-h-dvh lg:ps-72", !isFeed && !bare && "pb-[calc(6.5rem+env(safe-area-inset-bottom))] lg:pb-0")}>
         <Outlet />
       </main>
-      <BottomNav items={items} dark={isFeed} />
+      {!bare && <BottomNav items={items} dark={isFeed} />}
       <Toaster />
       <WelcomeSheet />
       <AuthPromptSheet />
