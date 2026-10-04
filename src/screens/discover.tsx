@@ -62,6 +62,13 @@ export function DiscoverScreen() {
       <TopBar title="גילוי" large />
       <div className="mx-auto max-w-5xl px-4 pb-6 lg:px-6">
         <StoriesTray className="mb-2" />
+        <Link to="/inspiration" className="mb-1 flex items-center justify-between gap-3 rounded-2xl bg-surface px-4 py-3 text-sm hover:bg-surface-2">
+          <span>
+            <span className="block font-semibold">השראה מאינסטגרם</span>
+            <span className="text-xs text-muted">20 רילסים של שיער, ציפורניים ואיפור, עם קרדיט ליוצרים</span>
+          </span>
+          <span aria-hidden>‹</span>
+        </Link>
         <form role="search" onSubmit={(e) => e.preventDefault()} className="mt-2 flex gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute start-4 top-1/2 size-5 -translate-y-1/2 text-muted" aria-hidden />

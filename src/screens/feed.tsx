@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { INSPIRATION_REELS, type InspirationReel } from "../data/inspiration";
+import { InspirationFeedCard } from "./inspiration";
 import { Link, useNavigate } from "react-router";
 import { AlertTriangle, Bell, Bookmark, CalendarPlus, ChevronDown, Heart, Info, Loader2, MapPin, MessageCircle, MoreHorizontal, Pause, Play, Send, Sparkles, Volume2, VolumeX } from "lucide-react";
 import clsx from "clsx";
@@ -79,7 +81,7 @@ export function FeedScreen() {
           </div>
         )}
       </header>
-      <FeedList key={tab + (cityId ?? "")} items={items} tabKey={tab} empty={<FeedEmpty tab={tab} cityName={city?.name} onPickCity={() => setCityOpen(true)} />} />
+      <FeedList key={tab + (cityId ?? "")} items={items} tabKey={tab} inspiration={tab === "for_you"} empty={<FeedEmpty tab={tab} cityName={city?.name} onPickCity={() => setCityOpen(true)} />} />
       <CityPicker open={cityOpen} onClose={() => setCityOpen(false)} />
     </div>
   );
@@ -124,7 +126,20 @@ function FeedEmpty({ tab, cityName, onPickCity }: { tab: FeedTab; cityName?: str
 /** Vertical snap list; exactly one item is active and only it may play. */
 const sourceOf = (tabKey: string): TrafficSource => (tabKey === "following" ? "following" : tabKey === "nearby" ? "nearby" : tabKey === "for_you" ? "feed" : "share");
 
-export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: RankedPost[]; tabKey: string; empty?: React.ReactNode; startIndex?: number }) {
+/** One Instagram inspiration card after every N Beautigo posts (For you tab only). */
+const INSPIRATION_EVERY = 4;
+type Row = { kind: "post"; item: RankedPost } | { kind: "ig"; reel: InspirationReel };
+
+export function FeedList({ items, tabKey, empty, startIndex = 0, inspiration = false }: { items: RankedPost[]; tabKey: string; empty?: React.ReactNode; startIndex?: number; inspiration?: boolean }) {
+  const rows = useMemo<Row[]>(() => {
+    const out: Row[] = [];
+    let k = 0;
+    items.forEach((item, i) => {
+      out.push({ kind: "post", item });
+      if (inspiration && (i + 1) % INSPIRATION_EVERY === 0 && k < INSPIRATION_REELS.length) out.push({ kind: "ig", reel: INSPIRATION_REELS[k++] });
+    });
+    return out;
+  }, [items, inspiration]);
   const scroller = useRef<HTMLDivElement>(null);
   const saved = useApp((s) => (tabKey in s.feedIndex ? s.feedIndex[tabKey as FeedTab] : 0));
   const [active, setActive] = useState(startIndex || saved || 0);
@@ -156,7 +171,7 @@ export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: Rank
     );
     root.querySelectorAll("[data-index]").forEach((el) => io.observe(el));
     return () => io.disconnect();
-  }, [items.length]);
+  }, [rows.length]);
 
   useEffect(() => {
     if (tabKey in useApp.getState().feedIndex) useApp.setState((s) => ({ feedIndex: { ...s.feedIndex, [tabKey]: active } }));
@@ -168,19 +183,23 @@ export function FeedList({ items, tabKey, empty, startIndex = 0 }: { items: Rank
       const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
       if (!step) return;
       e.preventDefault();
-      const next = Math.max(0, Math.min(items.length - 1, active + step));
+      const next = Math.max(0, Math.min(rows.length - 1, active + step));
       scroller.current?.querySelector<HTMLElement>(`[data-index="${next}"]`)?.scrollIntoView({ behavior: reduced ? "auto" : "smooth" });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, items.length, reduced]);
+  }, [active, rows.length, reduced]);
 
   if (!items.length) return <div className="grid h-full place-items-center px-6 text-ink">{empty}</div>;
   return (
     <div ref={scroller} className="no-scrollbar h-full snap-y snap-mandatory overflow-y-auto overscroll-contain" aria-label="פיד עבודות">
-      {items.map((it, i) => (
-        <FeedItem key={it.post.id} item={it} index={i} active={i === active} near={Math.abs(i - active) <= 1} pageVisible={visible} muted={muted} onToggleMute={() => setMuted((m) => !m)} source={sourceOf(tabKey)} />
-      ))}
+      {rows.map((r, i) =>
+        r.kind === "ig" ? (
+          <InspirationFeedCard key={r.reel.id} reel={r.reel} index={i} near={Math.abs(i - active) <= 1} />
+        ) : (
+          <FeedItem key={r.item.post.id} item={r.item} index={i} active={i === active} near={Math.abs(i - active) <= 1} pageVisible={visible} muted={muted} onToggleMute={() => setMuted((m) => !m)} source={sourceOf(tabKey)} />
+        ),
+      )}
       <div className="flex h-40 snap-end items-center justify-center text-sm text-white/70">ראית הכול כרגע ✨</div>
     </div>
   );

@@ -10,6 +10,7 @@ import { PostScreen } from "./screens/post";
 import { StoryViewer } from "./screens/stories";
 import { TagScreen } from "./screens/tag";
 import { DiscoverScreen } from "./screens/discover";
+import { InspirationScreen } from "./screens/inspiration";
 import { BusinessScreen } from "./screens/business";
 import { ProfessionalScreen } from "./screens/professional";
 import { BookingScreen } from "./screens/booking";
@@ -78,6 +79,7 @@ const routes: RouteObject[] = [
       { path: "/story/:businessId", element: <StoryViewer /> },
       { path: "/tag/:tag", element: <TagScreen /> },
       { path: "/discover", element: <DiscoverScreen /> },
+      { path: "/inspiration", element: <InspirationScreen /> },
       { path: "/b/:businessId", element: <BusinessScreen /> },
       { path: "/pro/:proId", element: <ProfessionalScreen /> },
       { path: "/book/:businessId", element: <BookingScreen /> },

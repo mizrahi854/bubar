@@ -104,3 +104,39 @@ test("camera explains itself when the browser blocks it", async ({ page }) => {
   await cam.getByRole("button", { name: "סגירת המצלמה" }).click();
   await expect(cam).toHaveCount(0);
 });
+
+test("Instagram inspiration: embeds with credit, never presented as Beautigo businesses", async ({ page }) => {
+  await start(page, CUSTOMER, "/discover");
+  await page.getByRole("link", { name: /השראה מאינסטגרם/ }).click();
+  await expect(page).toHaveURL(/#\/inspiration/);
+  const frames = page.locator("iframe[src*='instagram.com/reel/']");
+  await expect(frames).toHaveCount(20);
+  await expect(frames.first()).toHaveAttribute("src", "https://www.instagram.com/reel/DB9RyR9Rmp4/embed/");
+  // attributed per the source list vs. unverified
+  const zola = page.getByRole("listitem").filter({ hasText: "#11 ·" });
+  await expect(zola.getByRole("link", { name: /Zola Ganzorigt/ })).toHaveAttribute("href", "https://www.instagram.com/nailsbyzola/");
+  await expect(page.getByRole("listitem").filter({ hasText: "#18 ·" }).getByText("היוצר/ת לא אומת/ה")).toBeVisible();
+  await page.getByRole("radio", { name: "ציפורניים" }).click();
+  await expect(frames).toHaveCount(6);
+  await expect(page.getByRole("link", { name: /@betina_goldstein/ })).toHaveAttribute("href", "https://www.instagram.com/betina_goldstein/");
+  // no Beautigo business exists for these creators
+  await page.goto("/#/discover");
+  await page.getByLabel("חיפוש").fill("Zola");
+  await expect(page.getByRole("link", { name: /Zola/ })).toHaveCount(0);
+  // "find a business" goes to Discover filtered by the category
+  await page.goto("/#/inspiration");
+  await page.getByRole("radio", { name: "איפור" }).click();
+  await page.getByRole("button", { name: /מצאו עסק לאיפור/ }).first().click();
+  await expect(page).toHaveURL(/#\/discover/);
+});
+
+test("For you feed mixes in an Instagram card after every 4 reels", async ({ page }) => {
+  await start(page, CUSTOMER, "/");
+  await expect(page.locator("section[data-index='0']")).toBeVisible();
+  const card = page.locator("section[data-index='4']");
+  await expect(card).toHaveAttribute("aria-label", /השראה מאינסטגרם/);
+  await expect(card.getByRole("link", { name: /פתיחה באינסטגרם/ })).toHaveAttribute("href", "https://www.instagram.com/reel/DB9RyR9Rmp4/");
+  await card.scrollIntoViewIfNeeded();
+  await expect(card.locator("iframe")).toHaveCount(1);
+  await page.screenshot({ path: "test-results/feed-instagram-card.png" });
+});
